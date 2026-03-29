@@ -51,7 +51,10 @@ def run_checks(target_path: str,
                checkers: list[str] | None = None,
                version_map: dict[str, str] | None = None,
                use_clang: bool = False,
-               include_paths: list[str] | None = None) -> Reporter:
+               use_gcc: bool = False,
+               include_paths: list[str] | None = None,
+               gcc_defines: dict[str, str] | None = None,
+               gcc_path: str = "gcc") -> Reporter:
     """Run BSW verification checks and return a Reporter.
 
     Args:
@@ -68,7 +71,10 @@ def run_checks(target_path: str,
 
     # Scan directory
     scan_result = scan_directory(target_path, use_clang=use_clang,
-                                 include_paths=include_paths)
+                                 use_gcc=use_gcc,
+                                 include_paths=include_paths,
+                                 gcc_defines=gcc_defines,
+                                 gcc_path=gcc_path)
 
     # Filter modules if specified
     if modules:
@@ -148,8 +154,14 @@ Examples:
                         help="Launch GUI mode")
     parser.add_argument("--clang", action="store_true",
                         help="Use libclang AST parser (hybrid: regex + clang overlay)")
+    parser.add_argument("--gcc", action="store_true",
+                        help="Use gcc -E preprocessor for full macro expansion")
+    parser.add_argument("--gcc-path", default="gcc",
+                        help="Path to gcc binary (default: gcc, can be cross-compiler)")
     parser.add_argument("--include-path", "-I", action="append", default=[],
-                        help="Additional include paths for clang parser (can repeat: -I /path1 -I /path2)")
+                        help="Additional include paths (can repeat: -I /path1 -I /path2)")
+    parser.add_argument("-D", action="append", default=[], dest="defines",
+                        help="Preprocessor defines (can repeat: -D NAME=VALUE)")
 
     args = parser.parse_args()
 
@@ -182,9 +194,24 @@ Examples:
                     print(f"Warning: Unknown version '{ver}' for module '{mod}', "
                           f"using default", file=sys.stderr)
 
+    # Parse -D defines
+    gcc_defines = None
+    if args.defines:
+        gcc_defines = {}
+        for d in args.defines:
+            if '=' in d:
+                k, v = d.split('=', 1)
+                gcc_defines[k] = v
+            else:
+                gcc_defines[d] = ""
+
     reporter = run_checks(target_path, args.version, modules, checkers,
-                          version_map, use_clang=args.clang,
-                          include_paths=args.include_path or None)
+                          version_map,
+                          use_clang=args.clang,
+                          use_gcc=args.gcc,
+                          include_paths=args.include_path or None,
+                          gcc_defines=gcc_defines,
+                          gcc_path=args.gcc_path)
 
     if args.format == "json":
         output = reporter.format_json()

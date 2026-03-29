@@ -120,7 +120,10 @@ def _classify_file(file_path: str) -> tuple[str, str]:
 
 def scan_directory(root_path: str, parse_files: bool = True,
                    use_clang: bool = False,
-                   include_paths: list[str] | None = None) -> ScanResult:
+                   use_gcc: bool = False,
+                   include_paths: list[str] | None = None,
+                   gcc_defines: dict[str, str] | None = None,
+                   gcc_path: str = "gcc") -> ScanResult:
     """Scan a directory recursively for BSW C/H files.
 
     Args:
@@ -164,12 +167,17 @@ def scan_directory(root_path: str, parse_files: bool = True,
             elif file_type == "callback":
                 mod.callback_files.append(file_path)
 
-            if parse_files and not use_clang:
+            if parse_files and not use_clang and not use_gcc:
                 parsed = parse_file(file_path)
                 parsed.module_name = module_name
                 mod.parsed_files.append(parsed)
 
-    if parse_files and use_clang:
+    # ── gcc -E mode ──
+    if parse_files and use_gcc:
+        _run_gcc_parse(root_path, result, include_paths, gcc_defines, gcc_path)
+
+    # ── clang hybrid mode ──
+    elif parse_files and use_clang:
         # ── Hybrid mode: regex for ALL files + clang for .c files ──
         # Step 1: regex parses everything (includes, macros, typedefs from .h)
         for mod_name, mod_files in result.modules.items():
@@ -187,6 +195,43 @@ def scan_directory(root_path: str, parse_files: bool = True,
             pass  # regex results are already there
 
     return result
+
+
+def _run_gcc_parse(root_path: str, result: ScanResult,
+                   include_paths: list[str] | None = None,
+                   gcc_defines: dict[str, str] | None = None,
+                   gcc_path: str = "gcc"):
+    """Parse all files using gcc -E preprocessing + regex.
+
+    gcc -E fully expands macros and resolves #includes, then
+    the expanded plain C code is parsed with regex for maximum accuracy.
+    Also parses .h files with regex for macros/defines (gcc -E expands them away).
+    """
+    from .gcc_parser import gcc_parse_file
+    from .c_parser import parse_file as regex_parse_file
+
+    stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
+    all_includes = [stubs_dir, os.path.abspath(root_path)]
+    if include_paths:
+        all_includes.extend(include_paths)
+
+    for mod_name, mod_files in result.modules.items():
+        # Step 1: regex parse ALL .h files (for #define values, include guards)
+        for fp in mod_files.header_files + mod_files.config_files + mod_files.type_files + mod_files.callback_files:
+            parsed = regex_parse_file(fp)
+            parsed.module_name = mod_name
+            mod_files.parsed_files.append(parsed)
+
+        # Step 2: gcc -E parse .c files (macros expanded, accurate functions)
+        for fp in mod_files.source_files:
+            parsed = gcc_parse_file(fp, all_includes, gcc_defines, gcc_path)
+            parsed.module_name = mod_name
+            # Keep raw content from original file for text searches
+            try:
+                parsed.raw_content = open(fp, encoding='utf-8', errors='replace').read()
+            except Exception:
+                pass
+            mod_files.parsed_files.append(parsed)
 
 
 def _run_clang_overlay(root_path: str, result: ScanResult,
