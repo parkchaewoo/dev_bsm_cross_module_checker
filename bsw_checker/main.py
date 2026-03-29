@@ -49,7 +49,8 @@ def run_checks(target_path: str,
                version: str = "4.4.0",
                modules: list[str] | None = None,
                checkers: list[str] | None = None,
-               version_map: dict[str, str] | None = None) -> Reporter:
+               version_map: dict[str, str] | None = None,
+               use_clang: bool = False) -> Reporter:
     """Run BSW verification checks and return a Reporter.
 
     Args:
@@ -65,7 +66,7 @@ def run_checks(target_path: str,
     registry = ModuleRegistry()
 
     # Scan directory
-    scan_result = scan_directory(target_path)
+    scan_result = scan_directory(target_path, use_clang=use_clang)
 
     # Filter modules if specified
     if modules:
@@ -143,6 +144,8 @@ Examples:
                         help="Show info checks in console output")
     parser.add_argument("--gui", action="store_true",
                         help="Launch GUI mode")
+    parser.add_argument("--clang", action="store_true",
+                        help="Use libclang AST parser instead of regex")
 
     args = parser.parse_args()
 
@@ -175,7 +178,8 @@ Examples:
                     print(f"Warning: Unknown version '{ver}' for module '{mod}', "
                           f"using default", file=sys.stderr)
 
-    reporter = run_checks(target_path, args.version, modules, checkers, version_map)
+    reporter = run_checks(target_path, args.version, modules, checkers,
+                          version_map, use_clang=args.clang)
 
     if args.format == "json":
         output = reporter.format_json()
