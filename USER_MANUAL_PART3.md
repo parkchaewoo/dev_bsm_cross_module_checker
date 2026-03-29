@@ -1,4 +1,4 @@
-## Checker 상세 설명 (Part 3: Checker 11~15)
+## Checker 상세 설명 (Part 3: Checker 11~16)
 
 ---
 
@@ -252,6 +252,138 @@ void Com_TxConfirmation(PduIdType TxPduId);  /* 1 param = 4.0.3 시그니처 */
   Expected: 2 params (AUTOSAR 4.4.0)
   Actual:   1 params (AUTOSAR 4.0.3)
   Change: Com_TxConfirmation added Std_ReturnType result parameter
+```
+
+---
+
+### Checker 16: Code Quality Checker (`quality`)
+
+**목적**: 리턴값 미처리, .h/.c 프로토타입 불일치, 데드코드, 매직넘버,
+SchM+다중 return 위험 패턴을 검출합니다.
+
+#### Rule 목록
+
+| Rule ID | Severity | 설명 |
+|---------|----------|------|
+| QUAL-001 | WARN | Std_ReturnType 리턴하는 API 호출 후 결과 미확인 |
+| QUAL-002 | FAIL | .h 선언과 .c 정의의 리턴 타입 불일치 |
+| QUAL-003 | FAIL | .h 선언과 .c 정의의 파라미터 수 불일치 |
+| QUAL-004 | INFO | 어디서도 참조되지 않는 함수 (데드코드 의심) |
+| QUAL-005 | WARN | 크로스 모듈 API 호출에 매직넘버 사용 |
+| QUAL-006 | INFO | SchM_Enter + 다중 return 패턴 (Exit 누락 위험) |
+
+#### 검출 예시 1: 리턴값 무시 (QUAL-001)
+
+```c
+/* Com.c - BUG: PduR_ComTransmit 결과를 확인하지 않음 */
+void Com_MainFunctionTx(void)
+{
+    PduInfoType pduInfo;
+    pduInfo.SduLength = 8U;
+
+    /* 리턴값 E_OK/E_NOT_OK을 버림! */
+    PduR_ComTransmit(ComConf_ComIPdu_Msg1_Tx, &pduInfo);
+
+    /* 올바른 형태: */
+    /* if (PduR_ComTransmit(...) != E_OK) { handle error } */
+}
+```
+```
+[WARN] [QUAL-001] Com: Return value of PduR_ComTransmit() ignored
+  If the call fails (E_NOT_OK), the error goes undetected.
+  Fix: if (PduR_ComTransmit(...) != E_OK) { /* handle error */ }
+```
+
+#### 검출 예시 2: 프로토타입 불일치 (QUAL-002)
+
+```c
+/* Com.h */
+Std_ReturnType Com_SendSignal(Com_SignalIdType id, const void* data);
+
+/* Com.c - BUG: 리턴 타입이 다름! */
+uint8 Com_SendSignal(Com_SignalIdType id, const void* data)
+{
+    return 0U;
+}
+```
+```
+[FAIL] [QUAL-002] Com: Com_SendSignal() return type mismatch: .h vs .c
+  Declared: Std_ReturnType  |  Defined: uint8
+  Causes undefined behavior due to calling convention mismatch.
+```
+
+#### 검출 예시 3: SchM + 다중 return 위험 (QUAL-006)
+
+```c
+/* NvM.c */
+Std_ReturnType NvM_ReadBlock(NvM_BlockIdType BlockId, void* dst)
+{
+    SchM_Enter_NvM_NVM_EXCLUSIVE_AREA_0();
+
+    if (NvM_InitStatus == FALSE)
+    {
+        Det_ReportError(...);
+        return E_NOT_OK;   /* Exit 없이 return → 잠김! */
+    }
+    if (BlockId >= NVM_MAX_BLOCKS)
+    {
+        return E_NOT_OK;   /* 여기도 Exit 없이! */
+    }
+
+    /* ... 정상 처리 ... */
+    SchM_Exit_NvM_NVM_EXCLUSIVE_AREA_0();
+    return E_OK;
+}
+```
+```
+[INFO] [QUAL-006] NvM: NvM_ReadBlock() has SchM_Enter + 5 returns
+  Multiple returns with exclusive area protection is a common
+  source of lock-up bugs. Ensure SchM_Exit on all return paths.
+```
+
+---
+
+### 추가 확장 Rule (기존 Checker 보강)
+
+#### PDU Checker 추가 Rule
+
+| Rule ID | Severity | 설명 |
+|---------|----------|------|
+| PDU-005 | WARN | Com PDU가 PduR 라우팅에 없음 (미라우팅) |
+| PDU-006 | INFO | PduR PDU가 Com에 없음 (Dcm 등 다른 상위모듈 용) |
+| PDU-007 | WARN | PDU 이름에 Tx와 Rx가 동시에 있음 (방향 혼동) |
+
+```c
+/* Com_Cfg.h */
+#define ComConf_ComIPdu_SpecialMsg_Tx  0x0AU  /* Com에만 있음 */
+
+/* PduR_Cfg.h - SpecialMsg_Tx에 대한 라우팅 없음! */
+```
+```
+[WARN] [PDU-005] System: Com PDU 'SpecialMsg_Tx' not found in PduR routing
+  PDU cannot be transmitted because PduR does not know how to route it.
+```
+
+#### Init Checker 추가 Rule
+
+| Rule ID | Severity | 설명 |
+|---------|----------|------|
+| INIT-006 | WARN | 같은 Init 함수가 2번 이상 호출 |
+| INIT-007 | INFO | Init만 있고 DeInit/Shutdown 없음 |
+
+```c
+/* EcuM.c - BUG: Can_Init 2번 호출 */
+void EcuM_Init(void)
+{
+    Can_Init(&Can_Config);
+    CanIf_Init(&CanIf_Config);
+    Can_Init(&Can_Config);   /* 실수로 중복! */
+}
+```
+```
+[WARN] [INIT-006] Can: Can_Init() called 2 times
+  Double initialization can cause loss of runtime state.
+  Fix: Remove duplicate Can_Init() call
 ```
 
 ---

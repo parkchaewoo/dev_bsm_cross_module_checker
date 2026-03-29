@@ -32,8 +32,8 @@ python -m bsw_checker --gui
 | 2 | include_checker | INC-001~008 | Include guard, 필수 include, 레이어 위반 |
 | 3 | type_checker | TYPE-001~004 | AUTOSAR 표준 타입 및 Config 타입 검증 |
 | 4 | cross_module_checker | XMOD-001~007 | 크로스 모듈 호출 체인, 콜백 정합성 |
-| 5 | pdu_checker | PDU-001~004 | PDU ID/Signal 매핑, DLC 일관성 |
-| 6 | init_checker | INIT-001~005 | 초기화 순서 및 Config 파라미터 |
+| 5 | pdu_checker | PDU-001~007 | PDU ID/Signal 매핑, DLC 일관성, 미라우팅 PDU |
+| 6 | init_checker | INIT-001~007 | 초기화 순서, Config 파라미터, 이중 Init, DeInit 누락 |
 | 7 | det_checker | DET-001~008 | DET 에러 리포팅, Module ID, SID |
 | 8 | function_pointer_checker | FPTR-001~006 | 함수 포인터 라우팅 테이블 분석 |
 | 9 | schm_checker | SCHM-001~005 | SchM Exclusive Area Enter/Exit 쌍 |
@@ -43,6 +43,7 @@ python -m bsw_checker --gui
 | 13 | config_checker | CFG-001~005 | Cfg.h, 포스트빌드, DEV_ERROR_DETECT |
 | 14 | naming_checker | NAME-001~003 | AUTOSAR 네이밍 컨벤션 |
 | 15 | version_compat_checker | COMPAT-001~002 | 모듈 간 AUTOSAR 버전 호환성 |
+| 16 | code_quality_checker | QUAL-001~006 | 리턴값 무시, 프로토타입 불일치, 데드코드, 매직넘버 |
 
 ---
 
