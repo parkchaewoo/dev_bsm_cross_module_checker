@@ -13,12 +13,12 @@ class ApiChecker(BaseChecker):
         self.report = CheckerReport(checker_name=self.name)
 
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec:
                 self._info(mod_name, "API-000",
                            f"{mod_name} not in AUTOSAR spec registry",
                            f"Module {mod_name} was found but has no spec definition "
-                           f"for AUTOSAR version {self.version}. "
+                           f"for AUTOSAR version {self.get_version(mod_name)}. "
                            f"This could mean it's a vendor-specific or custom module.")
                 continue
 
@@ -45,7 +45,7 @@ class ApiChecker(BaseChecker):
             if not api.mandatory:
                 continue
             # Check version applicability
-            if api.since_version > self.version:
+            if api.since_version > self.get_version(mod_name):
                 continue
 
             if api.name in funcs:
@@ -59,7 +59,7 @@ class ApiChecker(BaseChecker):
             else:
                 self._fail(mod_name, "API-001",
                            f"{api.name}() missing",
-                           f"Mandatory API {api.name}() is required by AUTOSAR {self.version} "
+                           f"Mandatory API {api.name}() is required by AUTOSAR {self.get_version(mod_name)} "
                            f"SWS but was not found in any {mod_name} source files. "
                            f"This API is essential: {api.description}. "
                            f"Check if the function is defined in {mod_name}.c or declared in {mod_name}.h.",

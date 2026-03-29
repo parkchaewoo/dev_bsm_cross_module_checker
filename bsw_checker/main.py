@@ -14,6 +14,9 @@ from .checkers.pdu_checker import PduChecker
 from .checkers.init_checker import InitChecker
 from .checkers.det_checker import DetChecker
 from .checkers.function_pointer_checker import FunctionPointerChecker
+from .checkers.schm_checker import SchmChecker
+from .checkers.dem_event_checker import DemEventChecker
+from .checkers.buffer_checker import BufferChecker
 from .report.reporter import Reporter
 
 
@@ -26,19 +29,25 @@ ALL_CHECKERS = {
     "init": InitChecker,
     "det": DetChecker,
     "fptr": FunctionPointerChecker,
+    "schm": SchmChecker,
+    "dem_event": DemEventChecker,
+    "buffer": BufferChecker,
 }
 
 
-def run_checks(target_path: str, version: str = "4.4.0",
+def run_checks(target_path: str,
+               version: str = "4.4.0",
                modules: list[str] | None = None,
-               checkers: list[str] | None = None) -> Reporter:
+               checkers: list[str] | None = None,
+               version_map: dict[str, str] | None = None) -> Reporter:
     """Run BSW verification checks and return a Reporter.
 
     Args:
         target_path: Path to directory containing BSW C/H files.
-        version: AUTOSAR version to check against.
+        version: Default AUTOSAR version (used if module not in version_map).
         modules: List of module names to check (None = all found).
         checkers: List of checker names to run (None = all).
+        version_map: Per-module AUTOSAR version override {module_name: version}.
 
     Returns:
         Reporter instance with all results.
@@ -56,6 +65,14 @@ def run_checks(target_path: str, version: str = "4.4.0",
                 filtered[m] = scan_result.modules[m]
         scan_result.modules = filtered
 
+    # Build version_map: per-module version assignment
+    if version_map is None:
+        version_map = {}
+    # Fill defaults for modules not explicitly assigned
+    for mod_name in scan_result.modules:
+        if mod_name not in version_map:
+            version_map[mod_name] = version
+
     # Select checkers
     checker_names = checkers or list(ALL_CHECKERS.keys())
     checker_classes = [ALL_CHECKERS[name] for name in checker_names
@@ -64,13 +81,14 @@ def run_checks(target_path: str, version: str = "4.4.0",
     # Run checkers
     reports = []
     for checker_cls in checker_classes:
-        checker = checker_cls(registry, version)
+        checker = checker_cls(registry, version_map, version)
         report = checker.check(scan_result)
         reports.append(report)
 
     return Reporter(
         results=reports,
-        version=version,
+        version_map=version_map,
+        default_version=version,
         target_path=target_path,
         modules_checked=scan_result.module_names,
     )
@@ -87,6 +105,7 @@ Examples:
   %(prog)s /path/to/bsw --version 4.4.0
   %(prog)s /path/to/bsw --modules Com,PduR,CanIf
   %(prog)s /path/to/bsw --check api,cross,pdu
+  %(prog)s /path/to/bsw --module-version Com:4.4.0,CanIf:4.0.3,PduR:4.9.0
   %(prog)s /path/to/bsw --format json --output report.json
   %(prog)s --gui
         """)
@@ -95,9 +114,11 @@ Examples:
                         help="Path to BSW source directory")
     parser.add_argument("--version", "-v", default="4.4.0",
                         choices=SUPPORTED_VERSIONS,
-                        help="AUTOSAR version to check against (default: 4.4.0)")
+                        help="Default AUTOSAR version (default: 4.4.0)")
     parser.add_argument("--modules", "-m",
                         help="Comma-separated list of modules to check")
+    parser.add_argument("--module-version", dest="module_version",
+                        help="Per-module version override: Com:4.4.0,CanIf:4.0.3")
     parser.add_argument("--check", "-c",
                         help=f"Comma-separated checkers to run: "
                              f"{','.join(ALL_CHECKERS.keys())}")
@@ -131,7 +152,20 @@ Examples:
     modules = args.modules.split(',') if args.modules else None
     checkers = args.check.split(',') if args.check else None
 
-    reporter = run_checks(target_path, args.version, modules, checkers)
+    # Parse per-module version overrides
+    version_map = None
+    if args.module_version:
+        version_map = {}
+        for entry in args.module_version.split(','):
+            if ':' in entry:
+                mod, ver = entry.split(':', 1)
+                if ver in SUPPORTED_VERSIONS:
+                    version_map[mod.strip()] = ver.strip()
+                else:
+                    print(f"Warning: Unknown version '{ver}' for module '{mod}', "
+                          f"using default", file=sys.stderr)
+
+    reporter = run_checks(target_path, args.version, modules, checkers, version_map)
 
     if args.format == "json":
         output = reporter.format_json()
@@ -147,7 +181,6 @@ Examples:
     else:
         print(output)
 
-    # Exit with error code if any failures
     sys.exit(1 if reporter.total_fail > 0 else 0)
 
 

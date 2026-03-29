@@ -15,13 +15,15 @@ class CrossModuleChecker(BaseChecker):
     def check(self, scan_result: ScanResult) -> CheckerReport:
         self.report = CheckerReport(checker_name=self.name)
 
-        call_relations = self.registry.get_call_relations(self.version)
+        call_relations = self.registry.get_call_relations(self.default_version)
 
         self._check_call_chains(scan_result, call_relations)
         self._check_callback_definitions(scan_result)
         self._check_function_pointer_routing(scan_result)
         self._check_tx_path(scan_result)
         self._check_rx_path(scan_result)
+        self._check_declared_but_undefined(scan_result)
+        self._check_callback_signature_vs_spec(scan_result)
 
         return self.report
 
@@ -292,3 +294,89 @@ class CrossModuleChecker(BaseChecker):
                        "The CAN reception callback path has missing links. "
                        "See individual XMOD-001 results for details.",
                        suggestion="Verify callback configurations in PduR and CanIf")
+
+    def _check_declared_but_undefined(self, scan_result: ScanResult):
+        """Detect functions declared in headers but not defined in any .c file."""
+        declared = {}  # func_name -> (module, file, line)
+        defined = set()
+
+        for mod_name, mod_files in scan_result.modules.items():
+            for pf in mod_files.parsed_files:
+                for f in pf.functions:
+                    if f.is_definition:
+                        defined.add(f.name)
+                    elif f.file_path.endswith('.h'):
+                        if f.name not in declared:
+                            declared[f.name] = (mod_name, f.file_path, f.line_number)
+
+        # Check callbacks and important cross-module APIs
+        important_patterns = [
+            'RxIndication', 'TxConfirmation', 'TriggerTransmit',
+            'StartOfReception', 'CopyRxData', 'CopyTxData',
+            'ControllerBusOff', 'ControllerModeIndication',
+            'BusSM_ModeIndication',
+        ]
+
+        for func_name, (mod_name, fpath, line) in declared.items():
+            if func_name in defined:
+                continue
+
+            is_important = any(p in func_name for p in important_patterns)
+            if is_important:
+                self._fail(mod_name, "XMOD-006",
+                           f"{func_name}() declared but NOT defined",
+                           f"Function {func_name}() is declared in {fpath}:{line} "
+                           f"but has no definition in any .c file. This is a critical "
+                           f"callback/API that other modules depend on. "
+                           f"Without a definition, the linker will report an unresolved "
+                           f"symbol, or if the function is called at runtime, it will crash.",
+                           file_path=fpath,
+                           line_number=line,
+                           suggestion=f"Implement {func_name}() in {mod_name}.c")
+
+    def _check_callback_signature_vs_spec(self, scan_result: ScanResult):
+        """Check callback signatures match AUTOSAR version-specific specs."""
+        version_spec = self.registry.get_version_spec(self.default_version)
+        if not version_spec:
+            return
+
+        func_map_full = {}  # name -> FunctionInfo
+        for mod_name, mod_files in scan_result.modules.items():
+            for pf in mod_files.parsed_files:
+                for f in pf.functions:
+                    if f.name not in func_map_full or f.is_definition:
+                        func_map_full[f.name] = f
+
+        for mod_name, mod_spec in version_spec.modules.items():
+            if mod_name not in scan_result.modules:
+                continue
+
+            for api in mod_spec.apis:
+                if api.name not in func_map_full:
+                    continue
+                func = func_map_full[api.name]
+
+                # Check callback param types contain expected type keywords
+                if len(func.params) == len(api.params):
+                    for i, (actual_p, expected_p) in enumerate(zip(func.params, api.params)):
+                        # Extract type keywords from expected
+                        exp_types = set(expected_p.replace('*', '').replace('const', '').split())
+                        act_types = set(actual_p.replace('*', '').replace('const', '').split())
+
+                        # Check if major type keyword is present
+                        exp_main = [t for t in exp_types if t[0].isupper() and len(t) > 3]
+                        if exp_main:
+                            found = any(et in actual_p for et in exp_main)
+                            if not found:
+                                self._warn(mod_name, "XMOD-007",
+                                           f"{api.name}() param #{i+1} type mismatch",
+                                           f"Parameter #{i+1} of {api.name}(): "
+                                           f"expected type containing '{expected_p}' "
+                                           f"but found '{actual_p}'. "
+                                           f"Type mismatch in callback parameters can cause "
+                                           f"data misinterpretation between caller and callee.",
+                                           file_path=func.file_path,
+                                           line_number=func.line_number,
+                                           expected=expected_p,
+                                           actual=actual_p,
+                                           autosar_ref=f"SWS_{mod_name}")

@@ -45,7 +45,7 @@ class TypeChecker(BaseChecker):
         self.report = CheckerReport(checker_name=self.name)
 
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
 
             self._check_config_type(mod_name, mod_files, mod_spec)
             self._check_standard_type_usage(mod_name, mod_files)

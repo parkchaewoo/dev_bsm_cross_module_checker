@@ -15,7 +15,7 @@ class IncludeChecker(BaseChecker):
         self.report = CheckerReport(checker_name=self.name)
 
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
 
             self._check_include_guards(mod_name, mod_files)
             if mod_spec:
@@ -186,7 +186,7 @@ class IncludeChecker(BaseChecker):
         }
 
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec or not mod_spec.layer:
                 continue
             mod_layer = layer_order.get(mod_spec.layer, 0)
@@ -196,7 +196,7 @@ class IncludeChecker(BaseChecker):
                     for other_mod in scan_result.modules:
                         if other_mod == mod_name:
                             continue
-                        other_spec = self.registry.get_module_spec(self.version, other_mod)
+                        other_spec = self.registry.get_module_spec(self.get_version(other_mod), other_mod)
                         if not other_spec or not other_spec.layer:
                             continue
 

@@ -89,7 +89,7 @@ class InitChecker(BaseChecker):
 
     def _check_init_order(self, scan_result: ScanResult):
         """Check that initialization order follows AUTOSAR recommendations."""
-        recommended_order = self.registry.get_init_order(self.version)
+        recommended_order = self.registry.get_init_order(self.default_version)
         if not recommended_order:
             return
 
@@ -153,7 +153,7 @@ class InitChecker(BaseChecker):
     def _check_init_config_params(self, scan_result: ScanResult):
         """Check that Init functions receive proper config pointers."""
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec or not mod_spec.config_type:
                 continue
 
@@ -186,7 +186,7 @@ class InitChecker(BaseChecker):
     def _check_init_dependencies(self, scan_result: ScanResult):
         """Check that module init dependencies are satisfied."""
         for mod_name in scan_result.modules:
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec:
                 continue
 

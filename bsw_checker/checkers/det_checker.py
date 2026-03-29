@@ -18,6 +18,8 @@ class DetChecker(BaseChecker):
         self._check_det_report_calls(scan_result)
         self._check_module_ids(scan_result)
         self._check_error_defines(scan_result)
+        self._check_sid_uniqueness(scan_result)
+        self._check_sid_api_match(scan_result)
 
         return self.report
 
@@ -42,7 +44,7 @@ class DetChecker(BaseChecker):
         )
 
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             det_calls_found = False
 
             for pf in mod_files.parsed_files:
@@ -134,7 +136,7 @@ class DetChecker(BaseChecker):
     def _check_module_ids(self, scan_result: ScanResult):
         """Check that MODULE_ID defines match AUTOSAR assigned values."""
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec:
                 continue
 
@@ -168,7 +170,7 @@ class DetChecker(BaseChecker):
     def _check_error_defines(self, scan_result: ScanResult):
         """Check that DET error macros are defined with correct values."""
         for mod_name, mod_files in scan_result.modules.items():
-            mod_spec = self.registry.get_module_spec(self.version, mod_name)
+            mod_spec = self.registry.get_module_spec(self.get_version(mod_name), mod_name)
             if not mod_spec or not mod_spec.det_errors:
                 continue
 
@@ -207,3 +209,115 @@ class DetChecker(BaseChecker):
                                f"AUTOSAR SWS defines {det_err.name} = 0x{det_err.value:02X} "
                                f"for {mod_name} but this macro was not found. "
                                f"{det_err.description}")
+
+    def _check_sid_uniqueness(self, scan_result: ScanResult):
+        """Check API Service ID (SID) uniqueness within each module."""
+        sid_pattern = re.compile(
+            r'#\s*define\s+(\w+_SID_\w+)\s+([\w()]+)'
+        )
+
+        for mod_name, mod_files in scan_result.modules.items():
+            sids = {}  # name -> (value, file, line)
+            for pf in mod_files.parsed_files:
+                for m in sid_pattern.finditer(pf.raw_content):
+                    name = m.group(1)
+                    value = m.group(2).rstrip('uUlL')
+                    line_no = pf.raw_content[:m.start()].count('\n') + 1
+                    sids[name] = (value, pf.file_path, line_no)
+
+            if not sids:
+                continue
+
+            # Check for duplicate values
+            by_value = defaultdict(list)
+            for name, (val, fpath, line) in sids.items():
+                by_value[val].append((name, fpath, line))
+
+            for val, entries in by_value.items():
+                if len(entries) > 1:
+                    names = [e[0] for e in entries]
+                    self._fail(mod_name, "DET-006",
+                               f"Duplicate SID value {val}: {', '.join(names)}",
+                               f"Multiple API Service IDs in {mod_name} share value {val}: "
+                               f"{', '.join(names)}. When Det_ReportError uses these SIDs, "
+                               f"the DET log cannot distinguish which API triggered the error. "
+                               f"Each API must have a unique SID per AUTOSAR SWS.",
+                               file_path=entries[0][1],
+                               line_number=entries[0][2],
+                               suggestion="Assign unique SID values to each API")
+
+            # Report total SIDs found as info
+            self._info(mod_name, "DET-007",
+                       f"{mod_name} has {len(sids)} API Service IDs defined",
+                       f"Module {mod_name} defines {len(sids)} SID macros: "
+                       f"{', '.join(sorted(sids.keys())[:8])}"
+                       f"{'...' if len(sids) > 8 else ''}")
+
+    def _check_sid_api_match(self, scan_result: ScanResult):
+        """Check that Det_ReportError API_ID argument matches the calling function's SID."""
+        # Pattern: Inside a function, Det_ReportError(MODULE_ID, INST, API_SID, ERROR)
+        det_in_func = re.compile(
+            r'Det_Report(?:Error|RuntimeError)\s*\(\s*\w+\s*,\s*\w+\s*,\s*(\w+)\s*,'
+        )
+        # SID define pattern
+        sid_pattern = re.compile(
+            r'#\s*define\s+(\w+)_SID_(\w+)\s+([\w()]+)'
+        )
+
+        for mod_name, mod_files in scan_result.modules.items():
+            # Collect SID name -> function name mapping
+            sid_to_func = {}  # SID macro name -> expected function name
+            sid_values = {}   # SID macro name -> value
+
+            for pf in mod_files.parsed_files:
+                for m in sid_pattern.finditer(pf.raw_content):
+                    prefix = m.group(1)
+                    func_part = m.group(2)
+                    value = m.group(3)
+                    sid_name = f"{prefix}_SID_{func_part}"
+                    # Derive expected function name: COM_SID_INIT -> Com_Init
+                    expected_func = f"{mod_name}_{func_part.title().replace('_', '')}"
+                    # Also try lowercase variant
+                    sid_to_func[sid_name] = func_part
+                    sid_values[sid_name] = value
+
+            if not sid_to_func:
+                continue
+
+            # Check Det calls: is the SID arg in the right function?
+            for pf in mod_files.parsed_files:
+                if not pf.file_path.endswith('.c'):
+                    continue
+
+                for func in pf.functions:
+                    if not func.is_definition:
+                        continue
+
+                    # Find Det calls near this function definition in source
+                    func_start = pf.raw_content.find(f'{func.name}(')
+                    if func_start < 0:
+                        continue
+
+                    # Approximate function body (~2000 chars)
+                    func_section = pf.raw_content[func_start:func_start + 2000]
+
+                    for m in det_in_func.finditer(func_section):
+                        api_sid_arg = m.group(1).strip()
+
+                        if api_sid_arg in sid_to_func:
+                            expected_part = sid_to_func[api_sid_arg].upper()
+                            actual_name = func.name.upper()
+                            # Check if the SID corresponds to this function
+                            if expected_part not in actual_name:
+                                line_no = pf.raw_content[:func_start + m.start()].count('\n') + 1
+                                self._warn(mod_name, "DET-008",
+                                           f"SID mismatch: {api_sid_arg} in {func.name}()",
+                                           f"Det_ReportError uses SID '{api_sid_arg}' "
+                                           f"(for '{sid_to_func[api_sid_arg]}') inside "
+                                           f"function {func.name}(). The SID should match "
+                                           f"the calling function. Using wrong SIDs makes "
+                                           f"DET error logs misleading.",
+                                           file_path=pf.file_path,
+                                           line_number=line_no,
+                                           expected=f"SID for {func.name}",
+                                           actual=api_sid_arg)

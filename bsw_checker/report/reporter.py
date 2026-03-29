@@ -1,7 +1,6 @@
 """Report engine for BSW checker results with detailed explanations."""
 
 import json
-import os
 from datetime import datetime
 from typing import Optional
 
@@ -11,10 +10,14 @@ from ..checkers.base_checker import CheckerReport, CheckResult, Severity
 class Reporter:
     """Generates formatted reports from checker results."""
 
-    def __init__(self, results: list[CheckerReport], version: str,
-                 target_path: str, modules_checked: list[str]):
+    def __init__(self, results: list[CheckerReport],
+                 version_map: dict[str, str],
+                 default_version: str,
+                 target_path: str,
+                 modules_checked: list[str]):
         self.results = results
-        self.version = version
+        self.version_map = version_map
+        self.default_version = default_version
         self.target_path = target_path
         self.modules_checked = modules_checked
 
@@ -41,6 +44,14 @@ class Reporter:
     def total_info(self) -> int:
         return sum(1 for c in self.all_checks if c.severity == Severity.INFO)
 
+    def _format_module_versions(self) -> str:
+        """Format module list with per-module version info."""
+        parts = []
+        for mod in self.modules_checked:
+            ver = self.version_map.get(mod, self.default_version)
+            parts.append(f"{mod}({ver})")
+        return ', '.join(parts)
+
     def format_console(self, show_pass: bool = True, show_info: bool = False) -> str:
         """Format results for console output."""
         lines = []
@@ -48,13 +59,12 @@ class Reporter:
         lines.append("  BSW AUTOSAR Spec Verification Report")
         lines.append("=" * 70)
         lines.append(f"  Target:    {self.target_path}")
-        lines.append(f"  Version:   AUTOSAR {self.version}")
-        lines.append(f"  Modules:   {', '.join(self.modules_checked)}")
+        lines.append(f"  Default:   AUTOSAR {self.default_version}")
+        lines.append(f"  Modules:   {self._format_module_versions()}")
         lines.append(f"  Date:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append("=" * 70)
         lines.append("")
 
-        # Group by module then by checker
         by_module = {}
         for check in self.all_checks:
             mod = check.module_name
@@ -66,12 +76,12 @@ class Reporter:
             checks = by_module[mod]
             fails = [c for c in checks if c.severity == Severity.FAIL]
             warns = [c for c in checks if c.severity == Severity.WARN]
-            passes = [c for c in checks if c.severity == Severity.PASS]
 
             mod_status = "FAIL" if fails else ("WARN" if warns else "PASS")
             status_icon = {"PASS": "[PASS]", "FAIL": "[FAIL]", "WARN": "[WARN]"}[mod_status]
 
-            lines.append(f"--- {status_icon} {mod} ---")
+            ver = self.version_map.get(mod, self.default_version)
+            lines.append(f"--- {status_icon} {mod} (AUTOSAR {ver}) ---")
 
             for check in checks:
                 if check.severity == Severity.PASS and not show_pass:
@@ -83,7 +93,6 @@ class Reporter:
                 lines.append(f"  {icon} [{check.rule_id}] {check.title}")
 
                 if check.severity in (Severity.FAIL, Severity.WARN):
-                    # Show detailed description for failures/warnings
                     desc_lines = check.description.split('\n')
                     for dl in desc_lines:
                         lines.append(f"      {dl}")
@@ -106,7 +115,6 @@ class Reporter:
 
             lines.append("")
 
-        # Summary
         total = len(self.all_checks)
         lines.append("=" * 70)
         lines.append(f"  Summary: {total} checks | "
@@ -123,9 +131,10 @@ class Reporter:
         data = {
             "report": {
                 "tool": "BSW AUTOSAR Spec Verification Tool",
-                "version": "1.0.0",
+                "version": "1.1.0",
                 "target_path": self.target_path,
-                "autosar_version": self.version,
+                "default_autosar_version": self.default_version,
+                "module_versions": self.version_map,
                 "modules_checked": self.modules_checked,
                 "timestamp": datetime.now().isoformat(),
             },
@@ -144,6 +153,7 @@ class Reporter:
                 "severity": check.severity.value,
                 "checker": check.checker_name,
                 "module": check.module_name,
+                "autosar_version": self.version_map.get(check.module_name, self.default_version),
                 "rule_id": check.rule_id,
                 "title": check.title,
                 "description": check.description,
@@ -174,6 +184,7 @@ class Reporter:
                 "severity": check.severity.value,
                 "checker": check.checker_name,
                 "module": check.module_name,
+                "autosar_version": self.version_map.get(check.module_name, self.default_version),
                 "rule_id": check.rule_id,
                 "title": check.title,
                 "description": check.description,

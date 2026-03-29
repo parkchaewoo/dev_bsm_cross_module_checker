@@ -29,8 +29,8 @@ class CheckResult:
     expected: str = ""
     actual: str = ""
     suggestion: str = ""
-    autosar_ref: str = ""  # AUTOSAR SWS reference
-    verified: Optional[bool] = None  # None=not verified, True=confirmed, False=rejected
+    autosar_ref: str = ""
+    verified: Optional[bool] = None
 
 
 @dataclass
@@ -58,10 +58,22 @@ class BaseChecker:
     name: str = "base"
     description: str = "Base checker"
 
-    def __init__(self, registry: ModuleRegistry, version: str):
+    def __init__(self, registry: ModuleRegistry,
+                 version_map: dict[str, str],
+                 default_version: str = "4.4.0"):
         self.registry = registry
-        self.version = version
+        self.version_map = version_map
+        self.default_version = default_version
         self.report = CheckerReport(checker_name=self.name)
+
+    def get_version(self, module_name: str) -> str:
+        """Get the AUTOSAR version assigned to a specific module."""
+        return self.version_map.get(module_name, self.default_version)
+
+    # Legacy compatibility
+    @property
+    def version(self) -> str:
+        return self.default_version
 
     def check(self, scan_result: ScanResult) -> CheckerReport:
         """Run all checks. Override in subclasses."""
