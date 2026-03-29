@@ -196,6 +196,44 @@ def _strip_comments(content: str) -> str:
     return content
 
 
+def _expand_autosar_macros(content: str) -> str:
+    """Expand AUTOSAR compiler abstraction macros to plain C.
+
+    Transforms:
+        FUNC(void, COM_CODE)           -> void
+        P2CONST(PduInfoType, A, B)     -> const PduInfoType*
+        P2VAR(uint8, A, B)             -> uint8*
+        CONSTP2FUNC(ret, cls, name)    -> ret (* const name)
+        VAR(uint8, AUTOMATIC)          -> uint8
+        CONST(type, memclass)          -> const type
+    """
+    # FUNC(rettype, memclass) -> rettype
+    content = re.sub(
+        r'\bFUNC\s*\(\s*(\w+)\s*,\s*\w+\s*\)',
+        r'\1', content)
+    # P2CONST(type, memclass, ptrclass) -> const type*
+    content = re.sub(
+        r'\bP2CONST\s*\(\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*\)',
+        r'const \1*', content)
+    # P2VAR(type, memclass, ptrclass) -> type*
+    content = re.sub(
+        r'\bP2VAR\s*\(\s*(\w+)\s*,\s*\w+\s*,\s*\w+\s*\)',
+        r'\1*', content)
+    # CONSTP2FUNC(rettype, ptrclass, name) -> rettype (* const name)
+    content = re.sub(
+        r'\bCONSTP2FUNC\s*\(\s*(\w+)\s*,\s*\w+\s*,\s*(\w+)\s*\)',
+        r'\1 (* const \2)', content)
+    # VAR(type, memclass) -> type
+    content = re.sub(
+        r'\bVAR\s*\(\s*(\w+)\s*,\s*\w+\s*\)',
+        r'\1', content)
+    # CONST(type, memclass) -> const type
+    content = re.sub(
+        r'\bCONST\s*\(\s*(\w+)\s*,\s*\w+\s*\)',
+        r'const \1', content)
+    return content
+
+
 def _strip_preprocessor_continuations(content: str) -> str:
     """Join lines continued with backslash for preprocessor directives."""
     return re.sub(r'\\\n', ' ', content)
@@ -266,6 +304,7 @@ def parse_functions(content: str, file_path: str) -> list[FunctionInfo]:
     """Parse function declarations and definitions."""
     functions = []
     stripped = _strip_comments(content)
+    stripped = _expand_autosar_macros(stripped)
 
     # Parse AUTOSAR FUNC() macro style
     for m in _RE_AUTOSAR_FUNC.finditer(stripped):
@@ -319,6 +358,7 @@ def parse_typedefs(content: str, file_path: str) -> list[TypedefInfo]:
     """Parse typedef declarations."""
     typedefs = []
     stripped = _strip_comments(content)
+    stripped = _expand_autosar_macros(stripped)
 
     # Typedef struct/union/enum
     for m in _RE_TYPEDEF_STRUCT.finditer(stripped):
@@ -376,6 +416,7 @@ def parse_function_calls(content: str, file_path: str, functions: list[FunctionI
     """Parse function calls within source files (simplified, no body tracking for speed)."""
     calls = []
     stripped = _strip_comments(content)
+    stripped = _expand_autosar_macros(stripped)
 
     # Build set of defined function names for caller attribution
     defined_funcs = {f.name for f in functions if f.is_definition and f.file_path == file_path}
@@ -407,6 +448,7 @@ def parse_function_pointers(content: str, file_path: str) -> list[FunctionPointe
     """Parse function pointer declarations and assignments."""
     pointers = []
     stripped = _strip_comments(content)
+    stripped = _expand_autosar_macros(stripped)
 
     # Function pointer variables with optional assignment
     for m in _RE_FUNC_PTR_VAR.finditer(stripped):
