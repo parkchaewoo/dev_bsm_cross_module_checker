@@ -33,6 +33,8 @@ class PduChecker(BaseChecker):
         self._check_pdu_id_consistency(pdu_ids, scan_result)
         self._check_symbolic_name_consistency(scan_result)
         self._check_pdu_dlc_consistency(scan_result)
+        self._check_unrouted_pdus(scan_result)
+        self._check_tx_rx_direction(scan_result)
         if signal_ids:
             self._check_signal_id_ranges(signal_ids)
 
@@ -230,3 +232,63 @@ class PduChecker(BaseChecker):
                                suggestion="Assign unique signal IDs to each signal")
             else:
                 seen[val] = (name, mod)
+
+    def _check_unrouted_pdus(self, scan_result: ScanResult):
+        """Detect PDUs defined in Com but missing from PduR routing config."""
+        com_pdus = set()
+        pdur_pdus = set()
+
+        for mod_name, mod_files in scan_result.modules.items():
+            for pf in mod_files.parsed_files:
+                for macro in pf.macros:
+                    if macro.name.startswith('ComConf_ComIPdu_'):
+                        pdu_name = macro.name[len('ComConf_ComIPdu_'):]
+                        com_pdus.add(pdu_name)
+                    elif (macro.name.startswith('PduRConf_PduRSrcPdu_') or
+                          macro.name.startswith('PduRConf_PduRDestPdu_')):
+                        prefix = 'PduRConf_PduRSrcPdu_' if 'Src' in macro.name else 'PduRConf_PduRDestPdu_'
+                        pdu_name = macro.name[len(prefix):]
+                        pdur_pdus.add(pdu_name)
+
+        if not com_pdus or not pdur_pdus:
+            return
+
+        # Com PDUs not in PduR
+        for pdu in com_pdus:
+            if pdu not in pdur_pdus:
+                self._warn("System", "PDU-005",
+                           f"Com PDU '{pdu}' not found in PduR routing",
+                           f"PDU '{pdu}' is defined in Com configuration "
+                           f"(ComConf_ComIPdu_{pdu}) but has no corresponding "
+                           f"PduR routing entry (PduRConf_PduR*Pdu_{pdu}). "
+                           f"This PDU cannot be transmitted or received because "
+                           f"PduR does not know how to route it.",
+                           suggestion=f"Add PduR routing path for PDU '{pdu}'")
+
+        # PduR PDUs not in Com
+        for pdu in pdur_pdus:
+            if pdu not in com_pdus:
+                # Could be Dcm or other upper layer, just info
+                self._info("System", "PDU-006",
+                           f"PduR PDU '{pdu}' not in Com config",
+                           f"PduR routing entry '{pdu}' has no corresponding "
+                           f"Com PDU. This may be a diagnostic PDU routed to Dcm "
+                           f"or another upper layer module.")
+
+    def _check_tx_rx_direction(self, scan_result: ScanResult):
+        """Check that Tx PDUs are only in Tx configs and Rx in Rx configs."""
+        for mod_name, mod_files in scan_result.modules.items():
+            for pf in mod_files.parsed_files:
+                for macro in pf.macros:
+                    name = macro.name
+                    # Check for direction confusion
+                    if ('Tx' in name and 'Rx' in name and
+                        not any(x in name for x in ('TxRx', 'RxTx', 'TXRX', 'RXTX'))):
+                        line_no = macro.line_number
+                        self._warn(mod_name, "PDU-007",
+                                   f"PDU '{name}' has both Tx and Rx in name",
+                                   f"Macro '{name}' contains both 'Tx' and 'Rx' "
+                                   f"which is confusing. PDU direction should be "
+                                   f"clearly either Tx or Rx, not both.",
+                                   file_path=pf.file_path,
+                                   line_number=line_no)

@@ -21,6 +21,7 @@ from .checkers.callback_chain_checker import CallbackChainChecker
 from .checkers.config_checker import ConfigChecker
 from .checkers.naming_checker import NamingChecker
 from .checkers.version_compat_checker import VersionCompatChecker
+from .checkers.code_quality_checker import CodeQualityChecker
 from .report.reporter import Reporter
 
 
@@ -40,6 +41,7 @@ ALL_CHECKERS = {
     "config": ConfigChecker,
     "naming": NamingChecker,
     "compat": VersionCompatChecker,
+    "quality": CodeQualityChecker,
 }
 
 

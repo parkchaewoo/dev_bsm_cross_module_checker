@@ -1,6 +1,7 @@
 """Init Checker - Verifies initialization order and config structure consistency."""
 
 import re
+from collections import defaultdict
 
 from ..parser.file_scanner import ScanResult
 from ..spec.module_registry import ModuleRegistry
@@ -18,6 +19,8 @@ class InitChecker(BaseChecker):
         self._check_init_order(scan_result)
         self._check_init_config_params(scan_result)
         self._check_init_dependencies(scan_result)
+        self._check_double_init(scan_result)
+        self._check_deinit_exists(scan_result)
 
         return self.report
 
@@ -203,3 +206,52 @@ class InitChecker(BaseChecker):
                                f"but {dep} was not found in the scanned modules. "
                                f"This may cause initialization failures.",
                                suggestion=f"Ensure {dep} source files are included in the scan path")
+
+    def _check_double_init(self, scan_result: ScanResult):
+        """Detect if a module's Init is called more than once in EcuM/BswM."""
+        init_counts = defaultdict(int)
+        for caller_mod in ('EcuM', 'BswM'):
+            if caller_mod not in scan_result.modules:
+                continue
+            for pf in scan_result.modules[caller_mod].parsed_files:
+                if not pf.file_path.endswith('.c'):
+                    continue
+                init_pattern = re.compile(r'\b(\w+)_Init\s*\(')
+                for m in init_pattern.finditer(pf.raw_content):
+                    mod = m.group(1)
+                    if mod not in ('EcuM', 'BswM'):
+                        init_counts[mod] += 1
+
+        for mod, count in init_counts.items():
+            if count > 1:
+                self._warn(mod, "INIT-006",
+                           f"{mod}_Init() called {count} times",
+                           f"Module {mod}_Init() is called {count} times in "
+                           f"EcuM/BswM startup code. Double initialization can "
+                           f"cause loss of runtime state, reset of communication "
+                           f"buffers, or NvM data corruption. "
+                           f"Each module should be initialized exactly once.",
+                           suggestion=f"Remove duplicate {mod}_Init() call")
+
+    def _check_deinit_exists(self, scan_result: ScanResult):
+        """Check that modules with Init also have DeInit for proper shutdown."""
+        important_modules = {'Com', 'PduR', 'CanIf', 'ComM', 'Dcm', 'Dem', 'NvM'}
+        for mod_name, mod_files in scan_result.modules.items():
+            if mod_name not in important_modules:
+                continue
+            has_init = False
+            has_deinit = False
+            for pf in mod_files.parsed_files:
+                for func in pf.functions:
+                    if func.name == f'{mod_name}_Init':
+                        has_init = True
+                    if func.name in (f'{mod_name}_DeInit', f'{mod_name}_Shutdown'):
+                        has_deinit = True
+
+            if has_init and not has_deinit:
+                self._info(mod_name, "INIT-007",
+                           f"{mod_name} has Init but no DeInit/Shutdown",
+                           f"Module {mod_name} has {mod_name}_Init() but no "
+                           f"{mod_name}_DeInit() or {mod_name}_Shutdown(). "
+                           f"Without DeInit, the module cannot properly release "
+                           f"resources during ECU shutdown or sleep transition.")
