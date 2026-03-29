@@ -146,6 +146,33 @@ class BSWCheckerApp:
                   bg=COLORS["sidebar_bg"], relief="flat",
                   font=("Helvetica", 12, "bold"), width=3).pack(side=tk.RIGHT, padx=(4, 0))
 
+        # ── Additional Source Paths ──
+        tk.Label(self.sidebar, text="ADDITIONAL PATHS (src, include, gen)",
+                 bg=COLORS["sidebar_bg"], fg=COLORS["text_secondary"],
+                 font=("Helvetica", 9, "bold")).pack(anchor=tk.W, padx=pad, pady=(4, 1))
+
+        extra_frame = tk.Frame(self.sidebar, bg=COLORS["sidebar_bg"])
+        extra_frame.pack(fill=tk.X, padx=pad)
+
+        self.extra_paths_var = tk.StringVar()
+        tk.Entry(extra_frame, textvariable=self.extra_paths_var,
+                 font=("Helvetica", 10), bg=COLORS["input_bg"],
+                 relief="solid", bd=1).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        tk.Button(extra_frame, text="+", command=self._add_extra_path,
+                  bg=COLORS["sidebar_bg"], relief="flat",
+                  font=("Helvetica", 12, "bold"), width=2).pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.extra_paths_list = tk.Listbox(self.sidebar, height=3,
+                                            font=("Helvetica", 9),
+                                            bg=COLORS["input_bg"], relief="solid", bd=1)
+        self.extra_paths_list.pack(fill=tk.X, padx=pad, pady=(2, 2))
+
+        rm_frame = tk.Frame(self.sidebar, bg=COLORS["sidebar_bg"])
+        rm_frame.pack(fill=tk.X, padx=pad)
+        tk.Button(rm_frame, text="Remove", command=self._remove_extra_path,
+                  bg=COLORS["sidebar_bg"], relief="flat",
+                  fg=COLORS["text_secondary"], font=("Helvetica", 9)).pack(side=tk.LEFT)
+
         # Auto-detect button
         tk.Button(self.sidebar, text="Scan & Auto-detect Modules",
                   command=self._auto_detect_modules,
@@ -444,14 +471,35 @@ class BSWCheckerApp:
         if path:
             self.path_var.set(path)
 
+    def _add_extra_path(self):
+        path = self.extra_paths_var.get().strip()
+        if path and os.path.isdir(path):
+            self.extra_paths_list.insert(tk.END, path)
+            self.extra_paths_var.set("")
+        elif not path:
+            path = filedialog.askdirectory(title="Select Additional Source/Header Directory")
+            if path:
+                self.extra_paths_list.insert(tk.END, path)
+        else:
+            messagebox.showerror("Error", f"'{path}' is not a valid directory.")
+
+    def _remove_extra_path(self):
+        sel = self.extra_paths_list.curselection()
+        if sel:
+            self.extra_paths_list.delete(sel[0])
+
+    def _get_extra_paths(self) -> list[str]:
+        return list(self.extra_paths_list.get(0, tk.END))
+
     def _auto_detect_modules(self):
-        """Scan target path and auto-enable found modules."""
+        """Scan all paths and auto-enable found modules."""
         target = self.path_var.get()
         if not target or not os.path.isdir(target):
             messagebox.showerror("Error", "Please select a valid directory first.")
             return
 
-        scan = scan_directory(target, parse_files=False)
+        extra = self._get_extra_paths()
+        scan = scan_directory(target, source_paths=extra or None, parse_files=False)
         found = set(scan.module_names)
 
         count = 0
@@ -511,10 +559,13 @@ class BSWCheckerApp:
         self.run_btn.config(state=tk.DISABLED, text="Running...")
         self.root.update()
 
+        extra = self._get_extra_paths()
+
         def _do_check():
             try:
                 self.reporter = run_checks(target, default_ver, modules,
-                                            version_map=version_map)
+                                            version_map=version_map,
+                                            source_paths=extra or None)
                 self.results = self.reporter.get_results_for_gui()
                 self.root.after(0, self._display_results)
             except Exception as e:

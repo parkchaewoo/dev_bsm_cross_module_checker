@@ -106,69 +106,92 @@ def _classify_file(file_path: str) -> tuple[str, str]:
     return ("", "unknown")
 
 
-def scan_directory(root_path: str, parse_files: bool = True,
+def scan_directory(root_path: str,
+                   source_paths: list[str] | None = None,
+                   parse_files: bool = True,
                    force_regex: bool = False,
                    include_paths: list[str] | None = None,
                    gcc_defines: dict[str, str] | None = None,
                    gcc_path: str = "gcc") -> ScanResult:
-    """Scan a directory recursively for BSW C/H files.
+    """Scan directories for BSW C/H files.
 
-    Parsing modes:
-    - Default: gcc -E for .c files (macro expansion) + regex for .h files
-    - force_regex=True: regex only (no gcc dependency)
-    - Auto-fallback to regex if gcc is not available
+    Can scan a single directory or multiple separate directories for
+    source and header files (typical AUTOSAR project structure).
 
     Args:
-        root_path: Root directory to scan.
+        root_path: Primary directory to scan (recursively).
+        source_paths: Additional directories to scan for C/H files.
+            Use when .c and .h files are in separate directories.
+            Example: source_paths=['/proj/src', '/proj/gen', '/proj/include']
         parse_files: If True, parse each file immediately.
-        force_regex: If True, skip gcc and use regex only.
-        include_paths: Additional -I include directories for gcc.
+        force_regex: If True, use regex only (skip gcc).
+        include_paths: -I directories for gcc preprocessor.
+            Automatically includes all scanned directories.
         gcc_defines: -D preprocessor defines for gcc.
         gcc_path: Path to gcc binary.
     """
     result = ScanResult(root_path=root_path)
 
-    # Step 1: discover and classify files
-    for dirpath, _, filenames in os.walk(root_path):
-        for filename in filenames:
-            ext = Path(filename).suffix.lower()
-            if ext not in ('.c', '.h'):
-                continue
+    # Collect all directories to scan
+    scan_dirs = [root_path]
+    if source_paths:
+        scan_dirs.extend(source_paths)
 
-            file_path = os.path.join(dirpath, filename)
-            result.total_files += 1
+    # Step 1: discover and classify files from all directories
+    all_scanned_dirs = set()
+    for scan_dir in scan_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        for dirpath, _, filenames in os.walk(scan_dir):
+            all_scanned_dirs.add(dirpath)
+            for filename in filenames:
+                ext = Path(filename).suffix.lower()
+                if ext not in ('.c', '.h'):
+                    continue
 
-            module_name, file_type = _classify_file(file_path)
-            if not module_name or file_type == "unknown":
-                result.unknown_files.append(file_path)
-                continue
+                file_path = os.path.join(dirpath, filename)
+                result.total_files += 1
 
-            if module_name not in result.modules:
-                result.modules[module_name] = ModuleFiles(module_name=module_name)
+                module_name, file_type = _classify_file(file_path)
+                if not module_name or file_type == "unknown":
+                    result.unknown_files.append(file_path)
+                    continue
 
-            mod = result.modules[module_name]
-            if file_type == "source":
-                mod.source_files.append(file_path)
-            elif file_type == "header":
-                mod.header_files.append(file_path)
-            elif file_type == "config":
-                mod.config_files.append(file_path)
-            elif file_type == "types":
-                mod.type_files.append(file_path)
-            elif file_type == "callback":
-                mod.callback_files.append(file_path)
+                if module_name not in result.modules:
+                    result.modules[module_name] = ModuleFiles(module_name=module_name)
+
+                mod = result.modules[module_name]
+                if file_type == "source":
+                    mod.source_files.append(file_path)
+                elif file_type == "header":
+                    mod.header_files.append(file_path)
+                elif file_type == "config":
+                    mod.config_files.append(file_path)
+                elif file_type == "types":
+                    mod.type_files.append(file_path)
+                elif file_type == "callback":
+                    mod.callback_files.append(file_path)
 
     if not parse_files:
         return result
 
-    # Step 2: determine parser and parse files
+    # Step 2: build complete include path list
+    # Auto-add all scanned directories so gcc can find headers
+    all_includes = list(all_scanned_dirs)
+    stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
+    if os.path.isdir(stubs_dir):
+        all_includes.append(stubs_dir)
+    if include_paths:
+        all_includes.extend(include_paths)
+
+    # Step 3: parse files
     use_gcc = False
     if not force_regex:
         from .gcc_parser import check_gcc_available
         use_gcc = check_gcc_available(gcc_path)
 
     if use_gcc:
-        _parse_with_gcc(root_path, result, include_paths, gcc_defines, gcc_path)
+        _parse_with_gcc(result, all_includes, gcc_defines, gcc_path)
     else:
         _parse_with_regex(result)
 
@@ -184,23 +207,13 @@ def _parse_with_regex(result: ScanResult):
             mod_files.parsed_files.append(parsed)
 
 
-def _parse_with_gcc(root_path: str, result: ScanResult,
-                    include_paths: list[str] | None = None,
+def _parse_with_gcc(result: ScanResult,
+                    include_paths: list[str],
                     gcc_defines: dict[str, str] | None = None,
                     gcc_path: str = "gcc"):
-    """Parse files: .h with regex (for #define values), .c with gcc -E.
-
-    This gives the best of both worlds:
-    - .h files: regex extracts #define PDU_ID values, include guards, typedefs
-    - .c files: gcc -E expands all macros then regex parses the clean output
-    """
+    """Parse: .h with regex (for #define values), .c with gcc -E."""
     from .gcc_parser import gcc_parse_file
     from .c_parser import parse_file as regex_parse_file
-
-    stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
-    all_includes = [stubs_dir, os.path.abspath(root_path)]
-    if include_paths:
-        all_includes.extend(include_paths)
 
     for mod_name, mod_files in result.modules.items():
         # .h files: regex (preserves #define name=value pairs)
@@ -210,9 +223,9 @@ def _parse_with_gcc(root_path: str, result: ScanResult,
             parsed.module_name = mod_name
             mod_files.parsed_files.append(parsed)
 
-        # .c files: gcc -E preprocessed + tree-dump type enrichment
+        # .c files: gcc -E + tree-dump
         for fp in mod_files.source_files:
-            parsed = gcc_parse_file(fp, all_includes, gcc_defines, gcc_path)
+            parsed = gcc_parse_file(fp, include_paths, gcc_defines, gcc_path)
             parsed.module_name = mod_name
             try:
                 parsed.raw_content = open(fp, encoding='utf-8', errors='replace').read()

@@ -50,6 +50,7 @@ def run_checks(target_path: str,
                modules: list[str] | None = None,
                checkers: list[str] | None = None,
                version_map: dict[str, str] | None = None,
+               source_paths: list[str] | None = None,
                force_regex: bool = False,
                include_paths: list[str] | None = None,
                gcc_defines: dict[str, str] | None = None,
@@ -57,20 +58,15 @@ def run_checks(target_path: str,
     """Run BSW verification checks and return a Reporter.
 
     Args:
-        target_path: Path to directory containing BSW C/H files.
-        version: Default AUTOSAR version (used if module not in version_map).
-        modules: List of module names to check (None = all found).
-        checkers: List of checker names to run (None = all).
-        version_map: Per-module AUTOSAR version override {module_name: version}.
-        force_regex: If True, use regex only (skip gcc).
-        include_paths: Additional -I include directories for gcc.
-        gcc_defines: -D preprocessor defines for gcc.
-        gcc_path: Path to gcc binary.
+        target_path: Primary directory to scan.
+        source_paths: Additional directories with C/H files.
+        include_paths: -I directories for gcc preprocessor.
     """
     registry = ModuleRegistry()
 
     scan_result = scan_directory(
         target_path,
+        source_paths=source_paths,
         force_regex=force_regex,
         include_paths=include_paths,
         gcc_defines=gcc_defines,
@@ -114,17 +110,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # All files in one directory
   %(prog)s /path/to/bsw
-  %(prog)s /path/to/bsw --version 4.4.0
-  %(prog)s /path/to/bsw --modules Com,PduR,CanIf
+
+  # C and H files in separate directories
+  %(prog)s /proj/src --src /proj/include --src /proj/gen -I /proj/platform
+
+  # Cross-compiler + defines
+  %(prog)s /proj/src --src /proj/gen -I /proj/include \\
+      --gcc-path arm-none-eabi-gcc -D STD_ON=1
+
+  # Per-module AUTOSAR version
   %(prog)s /path/to/bsw --module-version Com:4.4.0,CanIf:4.0.3
-  %(prog)s /path/to/bsw -I /project/include -D COM_DEV_ERROR_DETECT=STD_ON
+
   %(prog)s /path/to/bsw --format json --output report.json
-  %(prog)s /path/to/bsw --regex   # force regex-only (no gcc)
   %(prog)s --gui
         """)
 
-    parser.add_argument("path", nargs="?", help="Path to BSW source directory")
+    parser.add_argument("path", nargs="?", help="Primary BSW source directory")
+    parser.add_argument("--src", action="append", default=[], dest="source_paths",
+                        help="Additional source/header directories (repeatable)")
+
     parser.add_argument("--version", "-v", default="4.4.0",
                         choices=SUPPORTED_VERSIONS,
                         help="Default AUTOSAR version (default: 4.4.0)")
@@ -188,6 +194,7 @@ Examples:
 
     reporter = run_checks(
         target_path, args.version, modules, checkers, version_map,
+        source_paths=args.source_paths or None,
         force_regex=args.regex,
         include_paths=args.include_path or None,
         gcc_defines=gcc_defines,
