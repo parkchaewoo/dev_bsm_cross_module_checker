@@ -173,7 +173,8 @@ class ClangParser:
         file_dir = os.path.dirname(os.path.abspath(file_path))
         args.append(f'-I{file_dir}')
 
-        tu = self.index.parse(file_path, args=args)
+        tu = self.index.parse(file_path, args=args,
+                              options=ci.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
 
         result = ClangParsedFile(file_path=file_path)
 
@@ -362,28 +363,42 @@ class ClangParser:
         return node.spelling or ""
 
     def _collect_macros(self, tu, result: ClangParsedFile, target_files: set[str]):
-        """Collect macro definitions from the translation unit."""
+        """Collect macro definitions from the translation unit.
+
+        With PARSE_DETAILED_PROCESSING_RECORD, collects macros from
+        the source file AND all included headers. Filters out compiler
+        built-in macros (starting with __ or _).
+        """
         for cursor in tu.cursor.get_children():
             if cursor.kind == ci.CursorKind.MACRO_DEFINITION:
-                if _is_in_target_file(cursor, target_files):
-                    tokens = list(cursor.get_tokens())
-                    name = tokens[0].spelling if tokens else cursor.spelling
-                    value = ' '.join(t.spelling for t in tokens[1:]) if len(tokens) > 1 else ""
-                    result.macros.append(ClangMacroInfo(
-                        name=name,
-                        tokens=value,
-                        file_path=_get_file_str(cursor),
-                        line_number=cursor.location.line,
-                    ))
+                name = cursor.spelling
+                # Filter out compiler built-in macros
+                if name.startswith('__') or name.startswith('_'):
+                    continue
+                # Filter common C standard macros
+                if name in ('NULL', 'EOF', 'BUFSIZ', 'FILENAME_MAX',
+                            'FOPEN_MAX', 'RAND_MAX', 'EXIT_SUCCESS',
+                            'EXIT_FAILURE', 'SEEK_SET', 'SEEK_CUR', 'SEEK_END'):
+                    continue
+
+                tokens = list(cursor.get_tokens())
+                tok_name = tokens[0].spelling if tokens else name
+                value = ' '.join(t.spelling for t in tokens[1:]) if len(tokens) > 1 else ""
+
+                result.macros.append(ClangMacroInfo(
+                    name=tok_name,
+                    tokens=value,
+                    file_path=_get_file_str(cursor),
+                    line_number=cursor.location.line,
+                ))
 
     def _collect_includes(self, tu, result: ClangParsedFile, source_file: str):
-        """Collect include directives."""
+        """Collect all include directives (direct and transitive)."""
         for inc in tu.get_includes():
-            if str(inc.source) == os.path.abspath(source_file):
-                result.includes.append(ClangIncludeInfo(
-                    header=os.path.basename(str(inc.include)),
-                    is_system=False,  # libclang doesn't distinguish <> vs ""
-                    file_path=str(inc.source),
+            result.includes.append(ClangIncludeInfo(
+                header=os.path.basename(str(inc.include)),
+                is_system=False,
+                file_path=str(inc.source),
                     line_number=inc.location.line,
                 ))
 

@@ -50,7 +50,8 @@ def run_checks(target_path: str,
                modules: list[str] | None = None,
                checkers: list[str] | None = None,
                version_map: dict[str, str] | None = None,
-               use_clang: bool = False) -> Reporter:
+               use_clang: bool = False,
+               include_paths: list[str] | None = None) -> Reporter:
     """Run BSW verification checks and return a Reporter.
 
     Args:
@@ -66,7 +67,8 @@ def run_checks(target_path: str,
     registry = ModuleRegistry()
 
     # Scan directory
-    scan_result = scan_directory(target_path, use_clang=use_clang)
+    scan_result = scan_directory(target_path, use_clang=use_clang,
+                                 include_paths=include_paths)
 
     # Filter modules if specified
     if modules:
@@ -145,7 +147,9 @@ Examples:
     parser.add_argument("--gui", action="store_true",
                         help="Launch GUI mode")
     parser.add_argument("--clang", action="store_true",
-                        help="Use libclang AST parser instead of regex")
+                        help="Use libclang AST parser (hybrid: regex + clang overlay)")
+    parser.add_argument("--include-path", "-I", action="append", default=[],
+                        help="Additional include paths for clang parser (can repeat: -I /path1 -I /path2)")
 
     args = parser.parse_args()
 
@@ -179,7 +183,8 @@ Examples:
                           f"using default", file=sys.stderr)
 
     reporter = run_checks(target_path, args.version, modules, checkers,
-                          version_map, use_clang=args.clang)
+                          version_map, use_clang=args.clang,
+                          include_paths=args.include_path or None)
 
     if args.format == "json":
         output = reporter.format_json()

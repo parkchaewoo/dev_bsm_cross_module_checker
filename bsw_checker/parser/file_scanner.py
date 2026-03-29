@@ -119,7 +119,8 @@ def _classify_file(file_path: str) -> tuple[str, str]:
 
 
 def scan_directory(root_path: str, parse_files: bool = True,
-                   use_clang: bool = False) -> ScanResult:
+                   use_clang: bool = False,
+                   include_paths: list[str] | None = None) -> ScanResult:
     """Scan a directory recursively for BSW C/H files.
 
     Args:
@@ -181,14 +182,15 @@ def scan_directory(root_path: str, parse_files: bool = True,
         try:
             from .clang_parser import ClangParser, CLANG_AVAILABLE
             if CLANG_AVAILABLE:
-                _run_clang_overlay(root_path, result)
+                _run_clang_overlay(root_path, result, include_paths)
         except (ImportError, Exception):
             pass  # regex results are already there
 
     return result
 
 
-def _run_clang_overlay(root_path: str, result: ScanResult):
+def _run_clang_overlay(root_path: str, result: ScanResult,
+                       include_paths: list[str] | None = None):
     """Overlay clang AST data onto regex-parsed results for .c files.
 
     Hybrid approach:
@@ -202,7 +204,10 @@ def _run_clang_overlay(root_path: str, result: ScanResult):
     import os
 
     stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
-    parser = ClangParser(include_paths=[stubs_dir])
+    all_includes = [stubs_dir]
+    if include_paths:
+        all_includes.extend(include_paths)
+    parser = ClangParser(include_paths=all_includes)
 
     for mod_name, mod_files in result.modules.items():
         c_files = [fp for fp in mod_files.all_files if fp.endswith('.c')]
