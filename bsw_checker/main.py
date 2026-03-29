@@ -51,7 +51,8 @@ def run_checks(target_path: str,
                checkers: list[str] | None = None,
                version_map: dict[str, str] | None = None,
                use_clang: bool = False,
-               use_gcc: bool = False,
+               use_gcc: bool = True,
+               force_regex: bool = False,
                include_paths: list[str] | None = None,
                gcc_defines: dict[str, str] | None = None,
                gcc_path: str = "gcc") -> Reporter:
@@ -70,8 +71,11 @@ def run_checks(target_path: str,
     registry = ModuleRegistry()
 
     # Scan directory
-    scan_result = scan_directory(target_path, use_clang=use_clang,
-                                 use_gcc=use_gcc,
+    actual_gcc = use_gcc and not force_regex and not use_clang
+    actual_clang = use_clang and not force_regex
+    scan_result = scan_directory(target_path,
+                                 use_clang=actual_clang,
+                                 use_gcc=actual_gcc,
                                  include_paths=include_paths,
                                  gcc_defines=gcc_defines,
                                  gcc_path=gcc_path)
@@ -152,10 +156,10 @@ Examples:
                         help="Show info checks in console output")
     parser.add_argument("--gui", action="store_true",
                         help="Launch GUI mode")
+    parser.add_argument("--regex", action="store_true",
+                        help="Force regex-only parser (skip gcc/clang)")
     parser.add_argument("--clang", action="store_true",
-                        help="Use libclang AST parser (hybrid: regex + clang overlay)")
-    parser.add_argument("--gcc", action="store_true",
-                        help="Use gcc -E preprocessor for full macro expansion")
+                        help="Force libclang parser (hybrid: regex + clang overlay)")
     parser.add_argument("--gcc-path", default="gcc",
                         help="Path to gcc binary (default: gcc, can be cross-compiler)")
     parser.add_argument("--include-path", "-I", action="append", default=[],
@@ -208,7 +212,8 @@ Examples:
     reporter = run_checks(target_path, args.version, modules, checkers,
                           version_map,
                           use_clang=args.clang,
-                          use_gcc=args.gcc,
+                          use_gcc=True,
+                          force_regex=args.regex,
                           include_paths=args.include_path or None,
                           gcc_defines=gcc_defines,
                           gcc_path=args.gcc_path)

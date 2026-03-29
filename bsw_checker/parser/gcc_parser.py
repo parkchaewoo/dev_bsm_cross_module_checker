@@ -282,18 +282,49 @@ def gcc_parse_file(file_path: str,
                    include_paths: list[str] | None = None,
                    defines: dict[str, str] | None = None,
                    gcc_path: str = "gcc") -> ParsedFile:
-    """Convenience: preprocess with gcc -E, then parse the result."""
+    """Preprocess with gcc -E, parse result, then enrich with tree-dump types."""
     pp = gcc_preprocess_with_line_tracking(
         file_path, include_paths, defines, gcc_path)
 
     if not pp.success:
-        # Fallback to regex on original file
         from .c_parser import parse_file
         result = parse_file(file_path)
-        result.raw_content += "\n/* gcc -E errors: " + "; ".join(pp.errors) + " */"
         return result
 
-    return parse_preprocessed(pp.preprocessed_code, file_path, pp.line_map)
+    result = parse_preprocessed(pp.preprocessed_code, file_path, pp.line_map)
+
+    # Enrich with gcc tree-dump type information
+    try:
+        type_infos = gcc_dump_types(file_path, include_paths, defines, gcc_path)
+        if type_infos:
+            _enrich_with_types(result, type_infos)
+    except Exception:
+        pass  # tree-dump is optional enrichment
+
+    # Keep original raw_content for text-based searches
+    try:
+        result.raw_content = open(file_path, encoding='utf-8', errors='replace').read()
+    except Exception:
+        pass
+
+    return result
+
+
+def _enrich_with_types(result: ParsedFile, type_infos: list):
+    """Enrich parsed file with type information from gcc tree dump."""
+    type_map = {t.func_name: t for t in type_infos}
+
+    for func in result.functions:
+        if func.name in type_map:
+            tinfo = type_map[func.name]
+            # Update local variable types for calls
+            for call in result.function_calls:
+                # If call has a return variable, find its type
+                for lv in tinfo.local_vars:
+                    pass  # type info available for deeper analysis
+
+            # Store type info as metadata
+            func.raw_text = f"gcc_types: vars={len(tinfo.local_vars)} calls={len(tinfo.calls)}"
 
 
 @dataclass

@@ -167,32 +167,50 @@ def scan_directory(root_path: str, parse_files: bool = True,
             elif file_type == "callback":
                 mod.callback_files.append(file_path)
 
-            if parse_files and not use_clang and not use_gcc:
-                parsed = parse_file(file_path)
-                parsed.module_name = module_name
-                mod.parsed_files.append(parsed)
+    if not parse_files:
+        return result
 
-    # ── gcc -E mode ──
-    if parse_files and use_gcc:
+    # ── Determine parsing mode ──
+    # Priority: explicit flags > auto-detect > regex fallback
+    parser_used = "regex"
+
+    if use_gcc:
+        # User explicitly asked for gcc
+        parser_used = "gcc"
+    elif use_clang:
+        # User explicitly asked for clang
+        parser_used = "clang"
+    else:
+        # Auto-detect: try gcc first (best accuracy), fallback to regex
+        from .gcc_parser import check_gcc_available
+        if check_gcc_available(gcc_path):
+            parser_used = "gcc"
+
+    # ── Parse files ──
+    if parser_used == "gcc":
         _run_gcc_parse(root_path, result, include_paths, gcc_defines, gcc_path)
 
-    # ── clang hybrid mode ──
-    elif parse_files and use_clang:
-        # ── Hybrid mode: regex for ALL files + clang for .c files ──
-        # Step 1: regex parses everything (includes, macros, typedefs from .h)
+    elif parser_used == "clang":
+        # Hybrid: regex for all files + clang overlay for .c
         for mod_name, mod_files in result.modules.items():
             for fp in mod_files.all_files:
                 parsed = parse_file(fp)
                 parsed.module_name = mod_name
                 mod_files.parsed_files.append(parsed)
-
-        # Step 2: clang parses .c files for accurate function/call info
         try:
             from .clang_parser import ClangParser, CLANG_AVAILABLE
             if CLANG_AVAILABLE:
                 _run_clang_overlay(root_path, result, include_paths)
         except (ImportError, Exception):
-            pass  # regex results are already there
+            pass
+
+    else:
+        # Pure regex fallback
+        for mod_name, mod_files in result.modules.items():
+            for fp in mod_files.all_files:
+                parsed = parse_file(fp)
+                parsed.module_name = mod_name
+                mod_files.parsed_files.append(parsed)
 
     return result
 
