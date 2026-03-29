@@ -28,7 +28,6 @@ KNOWN_BSW_MODULES = {
     "Csm", "CryIf", "Cry",
 }
 
-# File suffixes that indicate configuration files
 CONFIG_SUFFIXES = ['_Cfg', '_PBcfg', '_Lcfg']
 TYPE_SUFFIXES = ['_Types']
 CALLBACK_SUFFIXES = ['_Cbk']
@@ -39,11 +38,11 @@ INTERNAL_SUFFIXES = ['_Internal', '_Priv']
 class ModuleFiles:
     """Collection of files belonging to a single BSW module."""
     module_name: str
-    source_files: list[str] = field(default_factory=list)      # .c files
-    header_files: list[str] = field(default_factory=list)      # .h files
-    config_files: list[str] = field(default_factory=list)      # _Cfg.h, _Cfg.c
-    type_files: list[str] = field(default_factory=list)        # _Types.h
-    callback_files: list[str] = field(default_factory=list)    # _Cbk.h
+    source_files: list[str] = field(default_factory=list)
+    header_files: list[str] = field(default_factory=list)
+    config_files: list[str] = field(default_factory=list)
+    type_files: list[str] = field(default_factory=list)
+    callback_files: list[str] = field(default_factory=list)
     parsed_files: list[ParsedFile] = field(default_factory=list)
 
     @property
@@ -66,19 +65,13 @@ class ScanResult:
 
 
 def _classify_file(file_path: str) -> tuple[str, str]:
-    """Classify a file into module name and file type.
-
-    Returns:
-        (module_name, file_type) where file_type is one of:
-        'source', 'header', 'config', 'types', 'callback', 'unknown'
-    """
+    """Classify a file into (module_name, file_type)."""
     stem = Path(file_path).stem
     ext = Path(file_path).suffix.lower()
 
     if ext not in ('.c', '.h'):
         return ("", "unknown")
 
-    # Check for known suffixes
     for suffix in CONFIG_SUFFIXES:
         if stem.endswith(suffix):
             module = stem[:-len(suffix)]
@@ -101,41 +94,41 @@ def _classify_file(file_path: str) -> tuple[str, str]:
         if stem.endswith(suffix):
             module = stem[:-len(suffix)]
             if module in KNOWN_BSW_MODULES:
-                file_type = "source" if ext == '.c' else "header"
-                return (module, file_type)
+                return (module, "source" if ext == '.c' else "header")
 
-    # Check if stem is a known module name directly
     if stem in KNOWN_BSW_MODULES:
-        file_type = "source" if ext == '.c' else "header"
-        return (stem, file_type)
+        return (stem, "source" if ext == '.c' else "header")
 
-    # Try prefix matching: e.g., PduR_Com.h -> PduR module
     for module in sorted(KNOWN_BSW_MODULES, key=len, reverse=True):
         if stem.startswith(module + '_') or stem.startswith(module):
-            file_type = "source" if ext == '.c' else "header"
-            return (module, file_type)
+            return (module, "source" if ext == '.c' else "header")
 
     return ("", "unknown")
 
 
 def scan_directory(root_path: str, parse_files: bool = True,
-                   use_clang: bool = False,
-                   use_gcc: bool = False,
+                   force_regex: bool = False,
                    include_paths: list[str] | None = None,
                    gcc_defines: dict[str, str] | None = None,
                    gcc_path: str = "gcc") -> ScanResult:
     """Scan a directory recursively for BSW C/H files.
 
+    Parsing modes:
+    - Default: gcc -E for .c files (macro expansion) + regex for .h files
+    - force_regex=True: regex only (no gcc dependency)
+    - Auto-fallback to regex if gcc is not available
+
     Args:
         root_path: Root directory to scan.
         parse_files: If True, parse each file immediately.
-        use_clang: If True, use libclang AST parser instead of regex.
-
-    Returns:
-        ScanResult with classified modules and parsed files.
+        force_regex: If True, skip gcc and use regex only.
+        include_paths: Additional -I include directories for gcc.
+        gcc_defines: -D preprocessor defines for gcc.
+        gcc_path: Path to gcc binary.
     """
     result = ScanResult(root_path=root_path)
 
+    # Step 1: discover and classify files
     for dirpath, _, filenames in os.walk(root_path):
         for filename in filenames:
             ext = Path(filename).suffix.lower()
@@ -146,7 +139,6 @@ def scan_directory(root_path: str, parse_files: bool = True,
             result.total_files += 1
 
             module_name, file_type = _classify_file(file_path)
-
             if not module_name or file_type == "unknown":
                 result.unknown_files.append(file_path)
                 continue
@@ -155,7 +147,6 @@ def scan_directory(root_path: str, parse_files: bool = True,
                 result.modules[module_name] = ModuleFiles(module_name=module_name)
 
             mod = result.modules[module_name]
-
             if file_type == "source":
                 mod.source_files.append(file_path)
             elif file_type == "header":
@@ -170,60 +161,38 @@ def scan_directory(root_path: str, parse_files: bool = True,
     if not parse_files:
         return result
 
-    # ── Determine parsing mode ──
-    # Priority: explicit flags > auto-detect > regex fallback
-    parser_used = "regex"
+    # Step 2: determine parser and parse files
+    use_gcc = False
+    if not force_regex:
+        from .gcc_parser import check_gcc_available
+        use_gcc = check_gcc_available(gcc_path)
 
     if use_gcc:
-        # User explicitly asked for gcc
-        parser_used = "gcc"
-    elif use_clang:
-        # User explicitly asked for clang
-        parser_used = "clang"
+        _parse_with_gcc(root_path, result, include_paths, gcc_defines, gcc_path)
     else:
-        # Auto-detect: try gcc first (best accuracy), fallback to regex
-        from .gcc_parser import check_gcc_available
-        if check_gcc_available(gcc_path):
-            parser_used = "gcc"
-
-    # ── Parse files ──
-    if parser_used == "gcc":
-        _run_gcc_parse(root_path, result, include_paths, gcc_defines, gcc_path)
-
-    elif parser_used == "clang":
-        # Hybrid: regex for all files + clang overlay for .c
-        for mod_name, mod_files in result.modules.items():
-            for fp in mod_files.all_files:
-                parsed = parse_file(fp)
-                parsed.module_name = mod_name
-                mod_files.parsed_files.append(parsed)
-        try:
-            from .clang_parser import ClangParser, CLANG_AVAILABLE
-            if CLANG_AVAILABLE:
-                _run_clang_overlay(root_path, result, include_paths)
-        except (ImportError, Exception):
-            pass
-
-    else:
-        # Pure regex fallback
-        for mod_name, mod_files in result.modules.items():
-            for fp in mod_files.all_files:
-                parsed = parse_file(fp)
-                parsed.module_name = mod_name
-                mod_files.parsed_files.append(parsed)
+        _parse_with_regex(result)
 
     return result
 
 
-def _run_gcc_parse(root_path: str, result: ScanResult,
-                   include_paths: list[str] | None = None,
-                   gcc_defines: dict[str, str] | None = None,
-                   gcc_path: str = "gcc"):
-    """Parse all files using gcc -E preprocessing + regex.
+def _parse_with_regex(result: ScanResult):
+    """Parse all files using regex only."""
+    for mod_name, mod_files in result.modules.items():
+        for fp in mod_files.all_files:
+            parsed = parse_file(fp)
+            parsed.module_name = mod_name
+            mod_files.parsed_files.append(parsed)
 
-    gcc -E fully expands macros and resolves #includes, then
-    the expanded plain C code is parsed with regex for maximum accuracy.
-    Also parses .h files with regex for macros/defines (gcc -E expands them away).
+
+def _parse_with_gcc(root_path: str, result: ScanResult,
+                    include_paths: list[str] | None = None,
+                    gcc_defines: dict[str, str] | None = None,
+                    gcc_path: str = "gcc"):
+    """Parse files: .h with regex (for #define values), .c with gcc -E.
+
+    This gives the best of both worlds:
+    - .h files: regex extracts #define PDU_ID values, include guards, typedefs
+    - .c files: gcc -E expands all macros then regex parses the clean output
     """
     from .gcc_parser import gcc_parse_file
     from .c_parser import parse_file as regex_parse_file
@@ -234,84 +203,19 @@ def _run_gcc_parse(root_path: str, result: ScanResult,
         all_includes.extend(include_paths)
 
     for mod_name, mod_files in result.modules.items():
-        # Step 1: regex parse ALL .h files (for #define values, include guards)
-        for fp in mod_files.header_files + mod_files.config_files + mod_files.type_files + mod_files.callback_files:
+        # .h files: regex (preserves #define name=value pairs)
+        for fp in (mod_files.header_files + mod_files.config_files +
+                   mod_files.type_files + mod_files.callback_files):
             parsed = regex_parse_file(fp)
             parsed.module_name = mod_name
             mod_files.parsed_files.append(parsed)
 
-        # Step 2: gcc -E parse .c files (macros expanded, accurate functions)
+        # .c files: gcc -E preprocessed + tree-dump type enrichment
         for fp in mod_files.source_files:
             parsed = gcc_parse_file(fp, all_includes, gcc_defines, gcc_path)
             parsed.module_name = mod_name
-            # Keep raw content from original file for text searches
             try:
                 parsed.raw_content = open(fp, encoding='utf-8', errors='replace').read()
             except Exception:
                 pass
             mod_files.parsed_files.append(parsed)
-
-
-def _run_clang_overlay(root_path: str, result: ScanResult,
-                       include_paths: list[str] | None = None):
-    """Overlay clang AST data onto regex-parsed results for .c files.
-
-    Hybrid approach:
-    - regex already parsed ALL files (.h + .c) for macros, includes, typedefs
-    - clang now re-parses .c files for accurate function signatures and call graphs
-    - clang results REPLACE regex function/call data for .c files
-    - regex data for .h files and macros/defines is KEPT
-    """
-    from .clang_parser import ClangParser
-    from .c_parser import FunctionInfo, FunctionCall
-    import os
-
-    stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
-    all_includes = [stubs_dir]
-    if include_paths:
-        all_includes.extend(include_paths)
-    parser = ClangParser(include_paths=all_includes)
-
-    for mod_name, mod_files in result.modules.items():
-        c_files = [fp for fp in mod_files.all_files if fp.endswith('.c')]
-
-        for c_file in c_files:
-            try:
-                clang_result = parser.parse_file(c_file, include_dir=root_path)
-            except Exception:
-                continue
-
-            # Find the regex-parsed entry for this .c file
-            for pf in mod_files.parsed_files:
-                if os.path.abspath(pf.file_path) != os.path.abspath(c_file):
-                    continue
-
-                # Replace functions with clang's more accurate data
-                clang_funcs = []
-                for cf in clang_result.functions:
-                    clang_funcs.append(FunctionInfo(
-                        name=cf.name,
-                        return_type=cf.return_type,
-                        params=[f'{p["type"]} {p["name"]}' for p in cf.params],
-                        file_path=cf.file_path,
-                        line_number=cf.line_number,
-                        is_definition=cf.is_definition,
-                    ))
-                if clang_funcs:
-                    pf.functions = clang_funcs
-
-                # Replace calls with clang's accurate call graph
-                clang_calls = []
-                for cc in clang_result.calls:
-                    clang_calls.append(FunctionCall(
-                        caller_func=cc.caller_func,
-                        callee_func=cc.callee_func,
-                        arguments=', '.join(a['expr'] for a in cc.arguments),
-                        file_path=cc.file_path,
-                        line_number=cc.line_number,
-                    ))
-                if clang_calls:
-                    pf.function_calls = clang_calls
-
-                break  # found the matching parsed file
-
