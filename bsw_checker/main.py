@@ -17,6 +17,10 @@ from .checkers.function_pointer_checker import FunctionPointerChecker
 from .checkers.schm_checker import SchmChecker
 from .checkers.dem_event_checker import DemEventChecker
 from .checkers.buffer_checker import BufferChecker
+from .checkers.callback_chain_checker import CallbackChainChecker
+from .checkers.config_checker import ConfigChecker
+from .checkers.naming_checker import NamingChecker
+from .checkers.version_compat_checker import VersionCompatChecker
 from .report.reporter import Reporter
 
 
@@ -32,6 +36,10 @@ ALL_CHECKERS = {
     "schm": SchmChecker,
     "dem_event": DemEventChecker,
     "buffer": BufferChecker,
+    "chain": CallbackChainChecker,
+    "config": ConfigChecker,
+    "naming": NamingChecker,
+    "compat": VersionCompatChecker,
 }
 
 
