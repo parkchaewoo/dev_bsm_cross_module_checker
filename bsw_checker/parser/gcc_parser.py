@@ -26,30 +26,14 @@ from .c_parser import (
     FunctionInfo, FunctionCall, MacroDefine, TypedefInfo,
     IncludeInfo, FunctionPointer, ParsedFile, IncludeGuard,
     _clean_return_type, _KEYWORDS,
+    _RE_FUNCTION as _RE_FUNCTION_PP,
+    _RE_FUNC_CALL as _RE_FUNC_CALL_PP,
+    _RE_TYPEDEF_STRUCT as _RE_TYPEDEF_STRUCT_PP,
 )
 
 # Regex for #line directives (gcc -E output)
 _RE_LINE_DIRECTIVE = re.compile(
     r'^#\s+(\d+)\s+"([^"]+)"'
-)
-
-# Same function regex but applied to preprocessed code (cleaner)
-_RE_FUNCTION_PP = re.compile(
-    r'^([\w][\w\s*]*?)\s+'
-    r'(\w+)\s*'
-    r'\(([^)]*)\)\s*'
-    r'([{;])',
-    re.MULTILINE
-)
-
-_RE_FUNC_CALL_PP = re.compile(
-    r'\b(\w+)\s*\(([^;{]*?)\)\s*;',
-    re.MULTILINE
-)
-
-_RE_TYPEDEF_STRUCT_PP = re.compile(
-    r'typedef\s+(struct|union|enum)\s*\w*\s*\{([^}]*)\}\s*(\w+)\s*;',
-    re.DOTALL
 )
 
 
