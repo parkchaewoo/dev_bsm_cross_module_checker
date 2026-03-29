@@ -168,27 +168,84 @@ def scan_directory(root_path: str, parse_files: bool = True,
                 parsed.module_name = module_name
                 mod.parsed_files.append(parsed)
 
-    # Clang-based parsing (after all files classified)
     if parse_files and use_clang:
+        # ── Hybrid mode: regex for ALL files + clang for .c files ──
+        # Step 1: regex parses everything (includes, macros, typedefs from .h)
+        for mod_name, mod_files in result.modules.items():
+            for fp in mod_files.all_files:
+                parsed = parse_file(fp)
+                parsed.module_name = mod_name
+                mod_files.parsed_files.append(parsed)
+
+        # Step 2: clang parses .c files for accurate function/call info
         try:
             from .clang_parser import ClangParser, CLANG_AVAILABLE
             if CLANG_AVAILABLE:
-                _run_clang_parse(root_path, result)
-            else:
-                # Fallback to regex
-                for mod_name, mod_files in result.modules.items():
-                    for fp in mod_files.all_files:
-                        parsed = parse_file(fp)
-                        parsed.module_name = mod_name
-                        mod_files.parsed_files.append(parsed)
-        except ImportError:
-            for mod_name, mod_files in result.modules.items():
-                for fp in mod_files.all_files:
-                    parsed = parse_file(fp)
-                    parsed.module_name = mod_name
-                    mod_files.parsed_files.append(parsed)
+                _run_clang_overlay(root_path, result)
+        except (ImportError, Exception):
+            pass  # regex results are already there
 
     return result
+
+
+def _run_clang_overlay(root_path: str, result: ScanResult):
+    """Overlay clang AST data onto regex-parsed results for .c files.
+
+    Hybrid approach:
+    - regex already parsed ALL files (.h + .c) for macros, includes, typedefs
+    - clang now re-parses .c files for accurate function signatures and call graphs
+    - clang results REPLACE regex function/call data for .c files
+    - regex data for .h files and macros/defines is KEPT
+    """
+    from .clang_parser import ClangParser
+    from .c_parser import FunctionInfo, FunctionCall
+    import os
+
+    stubs_dir = os.path.join(os.path.dirname(__file__), 'autosar_stubs')
+    parser = ClangParser(include_paths=[stubs_dir])
+
+    for mod_name, mod_files in result.modules.items():
+        c_files = [fp for fp in mod_files.all_files if fp.endswith('.c')]
+
+        for c_file in c_files:
+            try:
+                clang_result = parser.parse_file(c_file, include_dir=root_path)
+            except Exception:
+                continue
+
+            # Find the regex-parsed entry for this .c file
+            for pf in mod_files.parsed_files:
+                if os.path.abspath(pf.file_path) != os.path.abspath(c_file):
+                    continue
+
+                # Replace functions with clang's more accurate data
+                clang_funcs = []
+                for cf in clang_result.functions:
+                    clang_funcs.append(FunctionInfo(
+                        name=cf.name,
+                        return_type=cf.return_type,
+                        params=[f'{p["type"]} {p["name"]}' for p in cf.params],
+                        file_path=cf.file_path,
+                        line_number=cf.line_number,
+                        is_definition=cf.is_definition,
+                    ))
+                if clang_funcs:
+                    pf.functions = clang_funcs
+
+                # Replace calls with clang's accurate call graph
+                clang_calls = []
+                for cc in clang_result.calls:
+                    clang_calls.append(FunctionCall(
+                        caller_func=cc.caller_func,
+                        callee_func=cc.callee_func,
+                        arguments=', '.join(a['expr'] for a in cc.arguments),
+                        file_path=cc.file_path,
+                        line_number=cc.line_number,
+                    ))
+                if clang_calls:
+                    pf.function_calls = clang_calls
+
+                break  # found the matching parsed file
 
 
 def _run_clang_parse(root_path: str, result: ScanResult):
