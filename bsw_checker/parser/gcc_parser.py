@@ -296,6 +296,114 @@ def gcc_parse_file(file_path: str,
     return parse_preprocessed(pp.preprocessed_code, file_path, pp.line_map)
 
 
+@dataclass
+class GccTypeInfo:
+    """Type information extracted from gcc tree dump."""
+    func_name: str
+    return_type: str
+    param_types: list[str]
+    local_vars: list[dict]  # [{"name": "pdu", "type": "struct PduInfoType"}]
+    calls: list[dict]  # [{"callee": "PduR_ComTransmit", "ret_type": "Std_ReturnType", "args": [...]}]
+
+
+def gcc_dump_types(file_path: str,
+                   include_paths: list[str] | None = None,
+                   defines: dict[str, str] | None = None,
+                   gcc_path: str = "gcc") -> list[GccTypeInfo]:
+    """Use gcc -fdump-tree-original to extract type information.
+
+    This compiles the file (not just preprocesses) so gcc fully resolves
+    all types, typedefs, and function signatures.
+    """
+    cmd = [gcc_path, "-c", "-fdump-tree-original"]
+
+    file_dir = os.path.dirname(os.path.abspath(file_path))
+    cmd.append(f"-I{file_dir}")
+    if include_paths:
+        for p in include_paths:
+            cmd.append(f"-I{p}")
+    if defines:
+        for name, value in defines.items():
+            cmd.append(f"-D{name}={value}" if value else f"-D{name}")
+
+    abs_file = os.path.abspath(file_path)
+    cmd.extend(["-std=c99", "-w", abs_file])
+
+    results = []
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+                cwd=tmpdir
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return results
+
+        # Find the .original dump file
+        dump_files = [f for f in os.listdir(tmpdir) if f.endswith('.original')]
+        if not dump_files:
+            return results
+
+        dump_content = open(os.path.join(tmpdir, dump_files[0])).read()
+
+    # Parse the tree dump
+    # Pattern: ;; Function FuncName (null)\n...\n{\n  body \n}
+    func_pattern = re.compile(
+        r';;\s*Function\s+(\w+)\s*\([^)]*\).*?\{(.*?)\}',
+        re.DOTALL
+    )
+
+    for m in func_pattern.finditer(dump_content):
+        func_name = m.group(1)
+        body = m.group(2)
+
+        info = GccTypeInfo(
+            func_name=func_name,
+            return_type="",
+            param_types=[],
+            local_vars=[],
+            calls=[],
+        )
+
+        # Extract local variable declarations
+        var_pattern = re.compile(r'^\s+([\w\s*]+?)\s+(\w+)\s*;', re.MULTILINE)
+        for vm in var_pattern.finditer(body):
+            var_type = vm.group(1).strip()
+            var_name = vm.group(2)
+            if var_name not in ('try', 'finally', 'CLOBBER'):
+                info.local_vars.append({"name": var_name, "type": var_type})
+
+        # Extract function calls with types
+        call_pattern = re.compile(
+            r'(?:(\w+)\s*=\s*)?(\w+)\s*\(([^)]*)\)\s*;'
+        )
+        for cm in call_pattern.finditer(body):
+            ret_var = cm.group(1) or ""
+            callee = cm.group(2)
+            args_text = cm.group(3)
+            if callee in ('CLOBBER',):
+                continue
+
+            # Find the type of ret_var from local vars
+            ret_type = ""
+            for lv in info.local_vars:
+                if lv["name"] == ret_var:
+                    ret_type = lv["type"]
+                    break
+
+            info.calls.append({
+                "callee": callee,
+                "ret_var": ret_var,
+                "ret_type": ret_type,
+                "args": args_text,
+            })
+
+        results.append(info)
+
+    return results
+
+
 def check_gcc_available(gcc_path: str = "gcc") -> bool:
     """Check if gcc is available."""
     try:
