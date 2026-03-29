@@ -9,8 +9,12 @@ from .base_checker import BaseChecker, CheckerReport
 
 
 # Patterns for PDU ID defines
-_RE_PDU_ID = re.compile(r'(?:Pdu|PDU|pdu)(?:R|Id|ID|_ID)', re.IGNORECASE)
-_RE_SIGNAL_ID = re.compile(r'(?:Signal|SIGNAL|Sig)(?:Id|ID|_ID)', re.IGNORECASE)
+_RE_PDU_ID = re.compile(r'(?:Pdu|PDU|pdu|IPdu|IPDU)', re.IGNORECASE)
+_RE_SIGNAL_ID = re.compile(r'(?:Signal|SIGNAL|ComSignal|ComConf_ComSignal)', re.IGNORECASE)
+# Match AUTOSAR symbolic name patterns directly
+_RE_SYMBOLIC_PDU = re.compile(
+    r'(ComConf_ComIPdu_|PduRConf_PduR\w+Pdu_|CanIfConf_CanIf\w+PduCfg_)\w+'
+)
 _RE_SYMBOLIC_NAME = re.compile(
     r'(ComConf_ComIPdu_|PduRConf_PduR(?:Src|Dest)Pdu_|CanIfConf_CanIf(?:Tx|Rx)PduCfg_)(\w+)'
 )
@@ -41,8 +45,9 @@ class PduChecker(BaseChecker):
         for mod_name, mod_files in scan_result.modules.items():
             for pf in mod_files.parsed_files:
                 for macro in pf.macros:
-                    if _RE_PDU_ID.search(macro.name) or 'PduId' in macro.name:
-                        # Extract base PDU name
+                    if (_RE_PDU_ID.search(macro.name) or
+                        _RE_SYMBOLIC_PDU.match(macro.name) or
+                        'PduId' in macro.name):
                         base = self._extract_pdu_base_name(macro.name, mod_name)
                         pdu_ids[base].append((mod_name, macro))
 
@@ -55,7 +60,8 @@ class PduChecker(BaseChecker):
         for mod_name, mod_files in scan_result.modules.items():
             for pf in mod_files.parsed_files:
                 for macro in pf.macros:
-                    if _RE_SIGNAL_ID.search(macro.name):
+                    if (_RE_SIGNAL_ID.search(macro.name) or
+                        'ComConf_ComSignal_' in macro.name):
                         signal_ids[macro.name].append((mod_name, macro))
 
         return signal_ids
@@ -167,6 +173,11 @@ class PduChecker(BaseChecker):
                         m = pattern.match(macro.name)
                         if m:
                             base = m.group(1)
+                            # Strip module name prefix for cross-module comparison
+                            for prefix in sorted(scan_result.modules.keys(), key=len, reverse=True):
+                                if base.startswith(prefix + '_'):
+                                    base = base[len(prefix) + 1:]
+                                    break
                             dlc_defines[base].append((mod_name, macro.value, macro))
 
         for base, entries in dlc_defines.items():
@@ -189,9 +200,13 @@ class PduChecker(BaseChecker):
         """Check signal ID ranges for overlaps or gaps."""
         id_values = []
         for name, entries in signal_ids.items():
+            # Skip non-signal macros (SID, API IDs etc)
+            if '_SID_' in name or '_API_' in name:
+                continue
             for mod_name, macro in entries:
                 try:
-                    val = int(macro.value, 0)
+                    clean_val = macro.value.rstrip('uUlL')
+                    val = int(clean_val, 0)
                     id_values.append((val, name, mod_name, macro))
                 except (ValueError, TypeError):
                     pass

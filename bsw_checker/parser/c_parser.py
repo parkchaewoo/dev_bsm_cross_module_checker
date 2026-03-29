@@ -125,8 +125,7 @@ _RE_INCLUDE_GUARD_DEFINE = re.compile(
 # Matches: ReturnType FuncName(params) { or ;
 _RE_FUNCTION = re.compile(
     r'^[ \t]*'
-    r'((?:(?:FUNC|STATIC|extern|static|inline|const|volatile|unsigned|signed|long|short|void|struct|enum)\s+)*'
-    r'(?:\w+(?:\s*\*\s*)?)+?)\s+'  # return type
+    r'([\w][\w\s*]*?)\s+'           # return type (simple greedy word+space+ptr)
     r'(\w+)\s*'                     # function name
     r'\(([^)]*)\)\s*'               # parameters
     r'([{;])',                       # body or declaration end
@@ -374,46 +373,32 @@ def parse_typedefs(content: str, file_path: str) -> list[TypedefInfo]:
 
 
 def parse_function_calls(content: str, file_path: str, functions: list[FunctionInfo]) -> list[FunctionCall]:
-    """Parse function calls within function bodies."""
+    """Parse function calls within source files (simplified, no body tracking for speed)."""
     calls = []
     stripped = _strip_comments(content)
 
-    # Build a map of function body ranges
-    func_bodies: list[tuple[str, int, int]] = []
-    for func in functions:
-        if func.is_definition and func.file_path == file_path:
-            # Find function body start
-            pattern = re.escape(func.name) + r'\s*\([^)]*\)\s*\{'
-            m = re.search(pattern, stripped)
-            if m:
-                start = m.end()
-                # Find matching closing brace
-                depth = 1
-                pos = start
-                while pos < len(stripped) and depth > 0:
-                    if stripped[pos] == '{':
-                        depth += 1
-                    elif stripped[pos] == '}':
-                        depth -= 1
-                    pos += 1
-                func_bodies.append((func.name, start, pos))
+    # Build set of defined function names for caller attribution
+    defined_funcs = {f.name for f in functions if f.is_definition and f.file_path == file_path}
 
-    # Find calls within each function body
-    for caller_name, body_start, body_end in func_bodies:
-        body = stripped[body_start:body_end]
-        for m in _RE_FUNC_CALL.finditer(body):
-            callee = m.group(1)
-            if callee in _KEYWORDS:
-                continue
-            args = m.group(2).strip()
-            line_no = stripped[:body_start + m.start()].count('\n') + 1
-            calls.append(FunctionCall(
-                caller_func=caller_name,
-                callee_func=callee,
-                arguments=args,
-                file_path=file_path,
-                line_number=line_no,
-            ))
+    # Simple approach: find all function-call-like patterns in the file
+    # and attribute to "file-level" caller (faster than brace matching)
+    current_func = ""
+    for m in _RE_FUNC_CALL.finditer(stripped):
+        callee = m.group(1)
+        if callee in _KEYWORDS:
+            continue
+        args = m.group(2).strip()
+
+        # Quick line number (approximate)
+        line_no = stripped.count('\n', 0, m.start()) + 1
+
+        calls.append(FunctionCall(
+            caller_func=current_func,
+            callee_func=callee,
+            arguments=args,
+            file_path=file_path,
+            line_number=line_no,
+        ))
 
     return calls
 
